@@ -16,40 +16,45 @@ This project was built as a final capstone to demonstrate a complete grounded-ge
 * [Repository Structure](#repository-structure)
 * [Part 1 - Knowledge Base, RAG and Evaluation](#part-1---knowledge-base-rag-and-evaluation)
 
-  * [Dataset Generation](#1-dataset-generation)
-  * [Knowledge Base](#2-knowledge-base)
-  * [Chunking Strategies](#3-chunking-strategies)
-  * [Embeddings and ChromaDB](#4-embeddings-and-chromadb)
-  * [Grounded Generation](#5-grounded-generation)
-  * [Threshold Calibration](#6-threshold-calibration)
-  * [Chunking Evaluation](#7-chunking-evaluation)
+  * [1. Dataset Generation](#1-dataset-generation)
+  * [2. Knowledge Base](#2-knowledge-base)
+  * [3. Chunking Strategies](#3-chunking-strategies)
+  * [4. Embeddings and ChromaDB](#4-embeddings-and-chromadb)
+  * [5. Grounded Generation](#5-grounded-generation)
+  * [6. Threshold Calibration](#6-threshold-calibration)
+  * [7. Chunking Evaluation](#7-chunking-evaluation)
 * [Part 2 - CrewAI Agent System](#part-2---crewai-agent-system)
 
-  * [Agents](#1-agents)
-  * [Tools](#2-tools)
-  * [Sequential Workflow](#3-sequential-workflow)
-  * [Session Memory](#4-session-memory)
-  * [Structured Output](#5-structured-output)
-  * [Guardrails](#6-guardrails)
+  * [1. Agents](#1-agents)
+  * [2. Tools](#2-tools)
+  * [3. Sequential Workflow](#3-sequential-workflow)
+  * [4. Session Memory](#4-session-memory)
+  * [5. Structured Output](#5-structured-output)
+  * [6. Guardrails](#6-guardrails)
 * [Part 3 - API, Logging and Evaluation](#part-3---api-logging-and-evaluation)
 
-  * [FastAPI](#1-fastapi)
-  * [Endpoints](#2-endpoints)
-  * [JSONL Logging](#3-jsonl-logging)
-  * [Task 13 Evaluation](#4-task-13-evaluation)
+  * [1. FastAPI](#1-fastapi)
+  * [2. Endpoints](#2-endpoints)
+  * [3. JSONL Logging](#3-jsonl-logging)
+  * [4. Task 13 Evaluation](#4-task-13-evaluation)
 * [Part 4 - Governance and Optimization](#part-4---governance-and-optimization)
 
-  * [AutoGen Review](#1-autogen-review)
-  * [Least Autonomy](#2-least-autonomy)
-  * [Risk Classification](#3-risk-classification)
-  * [Runtime Token and Cost Budget](#4-runtime-token-and-cost-budget)
-  * [Response Caching](#5-response-caching)
+  * [1. AutoGen Review](#1-autogen-review)
+  * [2. Least Autonomy](#2-least-autonomy)
+  * [3. Risk Classification](#3-risk-classification)
+  * [4. Runtime Token and Cost Budget](#4-runtime-token-and-cost-budget)
+  * [5. Response Caching](#5-response-caching)
 * [Key Design Choices](#key-design-choices)
 * [How to Run](#how-to-run)
 * [Demonstration and Evidence](#demonstration-and-evidence)
 * [Acceptance Criteria Checklist](#acceptance-criteria-checklist)
+* [Design Summary by Task](#design-summary-by-task)
+* [Key Results](#key-results)
+* [Reproducibility Notes](#reproducibility-notes)
 * [Limitations](#limitations)
 * [Conclusion](#conclusion)
+* [Main Files](#main-files)
+* [Project Status](#project-status)
 
 ---
 
@@ -86,22 +91,22 @@ FastAPI
   v
 Input Guardrails
   |
-  +----------------------+
-  |                      |
-  | RAG / KB Query       | Application Lookup
-  |                      |
-  v                      v
-Retrieval Agent      Lookup Agent
-  |                      |
-  +----------+-----------+
-             |
-             v
+  +-----------------------+
+  |                       |
+  | RAG / KB Query        | Application Lookup
+  |                       |
+  v                       v
+Retrieval Agent       Lookup Agent
+  |                       |
+  +-----------+-----------+
+              |
+              v
        Response Composer
-             |
-             v
+              |
+              v
    Output Groundedness Check
-             |
-             v
+              |
+              v
       Structured Response
 ```
 
@@ -109,7 +114,7 @@ Retrieval Agent      Lookup Agent
 
 # Problem Statement
 
-The capstone requires building a domain-specific support agent for Recruitment & HR while addressing the practical problems that appear in real agentic systems:
+The capstone requires building a domain-specific support agent for Recruitment & HR while addressing practical problems that appear in real agentic systems:
 
 1. The system must answer domain questions from a controlled knowledge base.
 2. The retrieval process must be evaluated rather than assumed to be correct.
@@ -120,9 +125,9 @@ The capstone requires building a domain-specific support agent for Recruitment &
 7. Inputs and outputs require guardrails.
 8. The application should be exposed through an API.
 9. Requests should produce auditable structured logs.
-10. The final responses should be evaluated using explicit metrics.
+10. Final responses should be evaluated using explicit metrics.
 11. An additional governance/review stage should validate generated responses.
-12. Runtime token/cost usage should be controlled.
+12. Runtime token and cost usage should be controlled.
 13. Repeated grounded-generation requests should avoid unnecessary repeated work.
 
 This repository implements these requirements across **Tasks 1-16**.
@@ -157,19 +162,22 @@ The main objectives of this project are:
 
 ```mermaid
 flowchart TD
+
     U[User] --> API[FastAPI API]
     API --> IG[Input Guardrails]
-
     IG -->|Allowed request| CREW[CrewAI Sequential Crew]
 
     CREW --> RA[Retrieval Agent]
     CREW --> LA[Lookup Agent]
     CREW --> CA[HR Response Composer]
 
-    RA --> RAG[RAG Search]
+    RA --> CACHE[In-Memory RAG Cache]
+    CACHE --> RAG[RAG Search]
     RAG --> EMB[SentenceTransformers Embeddings]
     EMB --> CHROMA[(ChromaDB)]
     CHROMA --> KB[HR Knowledge Base]
+
+    RAG --> CACHE
 
     LA --> LOOKUP[check_job_application_status]
     LOOKUP --> CSV[(job_applications.csv)]
@@ -180,35 +188,47 @@ flowchart TD
     CA --> OG[Output Groundedness Guardrail]
     OG --> RESP[CrewResponse]
     RESP --> API
+
     API --> LOG[JSONL Request Logger]
 
-    CA --> AG[AutoGen Governance Review]
+    CA -. Task 14 review .-> AG[AutoGen Governance Review]
     AG --> REVIEW[Policy Compliance Reviewer]
-    AG --> EDITOR[Final Editor]
+    REVIEW --> EDITOR[Final Editor]
     EDITOR --> VERDICT[Structured Verdict]
-
-    RAG --> CACHE[In-Memory Response Cache]
-    CACHE --> RAG
 ```
 
 ## Component Flow
 
 ```text
 1. User sends an HR question.
+
 2. FastAPI receives the request.
+
 3. Input guardrails mask phone PII and detect obvious prompt injection.
+
 4. The request reaches the CrewAI workflow when allowed.
+
 5. Retrieval Agent searches the HR knowledge base.
+
 6. Lookup Agent accesses application data only when required.
+
 7. Response Composer combines the permitted information.
+
 8. Output groundedness controls prevent unsupported answers.
+
 9. The response is validated against a Pydantic schema.
+
 10. FastAPI returns the response.
+
 11. The request is recorded in structured JSONL format.
-12. AutoGen can review the CrewAI draft against the retrieved context.
+
+12. Task 14 can review the CrewAI draft against the retrieved context.
+
 13. Governance checks restrict privileged tool ownership.
+
 14. Runtime governance checks token and synthetic cost limits.
-15. Repeated normalized RAG queries can be served from memory cache.
+
+15. Repeated normalized RAG queries can be served from the in-memory cache.
 ```
 
 ---
@@ -320,7 +340,7 @@ The supported statuses are:
 
 The generated records contain both the required application-status fields and additional realistic candidate fields.
 
-### Required fields
+### Required Fields
 
 ```text
 record_id
@@ -342,7 +362,7 @@ education
 location
 ```
 
-### Dataset constraints
+### Dataset Constraints
 
 The generator validates:
 
@@ -395,14 +415,14 @@ The RAG implementation also validates that at least 12 documents are available.
 
 Two chunking strategies were implemented and compared.
 
-### Fixed-size chunking
+### Fixed-size Chunking
 
 ```text
 Chunk size = 200 characters
 Overlap = 50 characters
 ```
 
-### Sentence-based chunking
+### Sentence-based Chunking
 
 ```text
 2 sentences per chunk
@@ -439,7 +459,7 @@ The embedding model and ChromaDB run locally, so the core RAG pipeline does not 
 
 ---
 
-# 5. Grounded Generation
+## 5. Grounded Generation
 
 The retrieval layer compares similarity scores against a calibrated threshold.
 
@@ -461,28 +481,28 @@ The deployed CrewAI RAG tool uses this threshold to determine whether a request 
 
 ---
 
-# 6. Threshold Calibration
+## 6. Threshold Calibration
 
 The threshold was derived from measured in-scope and out-of-scope retrieval scores instead of using an arbitrary preset.
 
-### In-scope measurements
+### In-scope Measurements
 
-| Query                                                        | Collection      | Top-1 Similarity |
-| ------------------------------------------------------------ | --------------- | ---------------: |
-| What degree is required for most professional jobs?          | sentence_chunks |           0.5715 |
-| How much notice should a candidate get before an interview?  | sentence_chunks |           0.5786 |
-| What is the normal employee notice period after resignation? | sentence_chunks |           0.7887 |
-| How much is the employee referral bonus?                     | sentence_chunks |           0.7571 |
-| When can an employee apply for an internal transfer?         | sentence_chunks |           0.8126 |
-| How long is the normal probation period?                     | sentence_chunks |           0.7332 |
+| Query                                                        | Collection        | Top-1 Similarity |
+| ------------------------------------------------------------ | ----------------- | ---------------: |
+| What degree is required for most professional jobs?          | `sentence_chunks` |           0.5715 |
+| How much notice should a candidate get before an interview?  | `sentence_chunks` |           0.5786 |
+| What is the normal employee notice period after resignation? | `sentence_chunks` |           0.7887 |
+| How much is the employee referral bonus?                     | `sentence_chunks` |           0.7571 |
+| When can an employee apply for an internal transfer?         | `sentence_chunks` |           0.8126 |
+| How long is the normal probation period?                     | `sentence_chunks` |           0.7332 |
 
-### Out-of-scope measurements
+### Out-of-scope Measurements
 
-| Query                                      | Collection   | Top-1 Similarity |
-| ------------------------------------------ | ------------ | ---------------: |
-| What is the capital of France?             | fixed_chunks |           0.0890 |
-| What is the weather forecast for tomorrow? | fixed_chunks |           0.1275 |
-| How do I bake a chocolate cake?            | fixed_chunks |           0.0925 |
+| Query                                      | Collection     | Top-1 Similarity |
+| ------------------------------------------ | -------------- | ---------------: |
+| What is the capital of France?             | `fixed_chunks` |           0.0890 |
+| What is the weather forecast for tomorrow? | `fixed_chunks` |           0.1275 |
+| How do I bake a chocolate cake?            | `fixed_chunks` |           0.0925 |
 
 The lowest measured in-scope value is:
 
@@ -508,24 +528,24 @@ Therefore:
 RAG_THRESHOLD = 0.3495
 ```
 
-This produces an explicit, reproducible threshold-selection method.
+This produces an explicit and reproducible threshold-selection method.
 
 ---
 
-# 7. Chunking Evaluation
+## 7. Chunking Evaluation
 
 Task 5 evaluates the same five in-scope queries against both collections.
 
 Retrieved chunks are mapped to parent source documents before calculating precision and recall. Duplicate chunks belonging to the same source document are not counted as separate documents.
 
-## Results
+### Results
 
 | Collection        | Average Precision | Average Recall |
 | ----------------- | ----------------: | -------------: |
 | `fixed_chunks`    |            0.6667 |         1.0000 |
 | `sentence_chunks` |            0.4333 |         1.0000 |
 
-### Selected strategy
+### Selected Strategy
 
 ```text
 fixed_chunks
@@ -537,11 +557,11 @@ The fixed-size strategy achieved higher average precision while maintaining the 
 
 # Part 2 - CrewAI Agent System
 
-# 1. Agents
+## 1. Agents
 
 The project uses three CrewAI agents.
 
-## Retrieval Agent
+### Retrieval Agent
 
 Role:
 
@@ -563,7 +583,7 @@ rag_search
 
 ---
 
-## Lookup Agent
+### Lookup Agent
 
 Role:
 
@@ -585,7 +605,7 @@ check_job_application_status
 
 ---
 
-## Response Composer
+### Response Composer
 
 Role:
 
@@ -610,9 +630,9 @@ The Composer has no tools.
 
 ---
 
-# 2. Tools
+## 2. Tools
 
-## RAG Tool
+### RAG Tool
 
 The Retrieval Agent uses:
 
@@ -634,7 +654,7 @@ for downstream guardrail and evaluation logic.
 
 ---
 
-## Application Lookup Tool
+### Application Lookup Tool
 
 The application lookup is:
 
@@ -663,7 +683,7 @@ The lookup returns factual application information rather than generating it.
 
 ---
 
-# 3. Sequential Workflow
+## 3. Sequential Workflow
 
 The main CrewAI process uses:
 
@@ -689,7 +709,7 @@ The three-agent architecture is intentionally simple and controlled.
 
 ---
 
-# 4. Session Memory
+## 4. Session Memory
 
 Session memory is implemented with:
 
@@ -721,14 +741,17 @@ The RAG query itself remains based on the current user message rather than blind
 
 ---
 
-# 5. Structured Output
+## 5. Structured Output
 
 The project defines the following Pydantic model:
 
 ```python
 class CrewResponse(BaseModel):
+
     final_answer: str
+
     query: str
+
     record_id: Optional[str] = None
 ```
 
@@ -738,11 +761,11 @@ The response is explicitly validated before it is returned.
 
 ---
 
-# 6. Guardrails
+## 6. Guardrails
 
 The project implements three main Task 10 controls.
 
-## Input PII masking
+### Input PII Masking
 
 Fixed-format Indian phone numbers are detected and replaced with:
 
@@ -764,7 +787,7 @@ The masked value is used downstream.
 
 ---
 
-## Prompt-injection detection
+### Prompt-injection Detection
 
 The project checks for obvious injection patterns such as:
 
@@ -780,13 +803,13 @@ show me the system prompt
 The configured policy is:
 
 ```text
-Phone PII      -> mask and continue
+Phone PII        -> mask and continue
 Prompt injection -> block request
 ```
 
 ---
 
-## Output groundedness
+### Output Groundedness
 
 The output-side guardrail uses the RAG groundedness decision.
 
@@ -798,7 +821,7 @@ This prevents a weak retrieval result from being turned into a confident answer.
 
 # Part 3 - API, Logging and Evaluation
 
-# 1. FastAPI
+## 1. FastAPI
 
 The project exposes the agent through FastAPI.
 
@@ -825,9 +848,9 @@ so the capstone can run with the local deterministic setup without requiring ext
 
 ---
 
-# 2. Endpoints
+## 2. Endpoints
 
-## POST `/ask`
+### POST `/ask`
 
 Used for normal HR support requests.
 
@@ -849,7 +872,7 @@ query
 
 ---
 
-## POST `/add-document`
+### POST `/add-document`
 
 Used to add a knowledge-base document.
 
@@ -873,7 +896,7 @@ The full document body is not placed into the structured request log.
 
 ---
 
-## WebSocket `/ws/chat`
+### WebSocket `/ws/chat`
 
 Used for real-time multi-turn chat.
 
@@ -883,7 +906,7 @@ The WebSocket uses a session-oriented workflow so that the conversation can main
 
 ---
 
-# 3. JSONL Logging
+## 3. JSONL Logging
 
 Task 12 is implemented with:
 
@@ -928,7 +951,7 @@ This ensures the same safe masked value is reused for the downstream request and
 
 ---
 
-# 4. Task 13 Evaluation
+## 4. Task 13 Evaluation
 
 The Task 13 evaluation harness is:
 
@@ -961,7 +984,7 @@ Safety
 
 The evaluation runs with the local deterministic `MOCK_LLM` setup.
 
-## Authoritative Task 13 Results
+### Authoritative Task 13 Results
 
 | Metric       | Average |
 | ------------ | ------: |
@@ -970,7 +993,7 @@ The evaluation runs with the local deterministic `MOCK_LLM` setup.
 | Completeness |  0.8489 |
 | Safety       |  1.0000 |
 
-### Out-of-scope behavior
+### Out-of-scope Behavior
 
 Two deliberately unrelated questions triggered the fallback behavior.
 
@@ -979,7 +1002,7 @@ Two deliberately unrelated questions triggered the fallback behavior.
 | Q13   |           0.2008 | `True`   |
 | Q14   |           0.1665 | `True`   |
 
-### Output safety check
+### Output Safety Check
 
 The final evaluation recorded:
 
@@ -998,7 +1021,7 @@ eval/task13_results.csv
 
 # Part 4 - Governance and Optimization
 
-# 1. AutoGen Review
+## 1. AutoGen Review
 
 Task 14 is implemented in:
 
@@ -1045,8 +1068,11 @@ The Final-Editor returns the Pydantic model:
 
 ```python
 class YourVerdictModel(BaseModel):
+
     approved: bool
+
     final_answer: str
+
     reason: str
 ```
 
@@ -1056,9 +1082,7 @@ The AutoGen team also explicitly registers:
 StructuredMessage[YourVerdictModel]
 ```
 
----
-
-## Approved case
+### Approved Case
 
 The first demonstration uses a real CrewAI response and its real RAG context.
 
@@ -1069,9 +1093,7 @@ approved = True
 final_answer remains unchanged
 ```
 
----
-
-## Revised case
+### Revised Case
 
 The second demonstration intentionally corrupts the draft by adding an unsupported claim about a signing bonus.
 
@@ -1087,7 +1109,7 @@ This demonstrates that the review stage is actually checking grounding instead o
 
 ---
 
-# 2. Least Autonomy
+## 2. Least Autonomy
 
 Task 15 applies the principle of least autonomy to privileged tools.
 
@@ -1123,7 +1145,7 @@ An unsafe wiring change raises an assertion failure.
 
 ---
 
-# 3. Risk Classification
+## 3. Risk Classification
 
 The application is classified as:
 
@@ -1143,7 +1165,7 @@ The system is a support agent rather than an autonomous hiring decision-maker, b
 
 ---
 
-# 4. Runtime Token and Cost Budget
+## 4. Runtime Token and Cost Budget
 
 The runtime governance controls include:
 
@@ -1156,13 +1178,13 @@ Because the project uses `MOCK_LLM`, the cost value is explicitly a **synthetic 
 
 The token count is deterministic and based on whitespace splitting.
 
-## Demonstrations
+### Demonstrations
 
-### Normal request
+#### Normal Request
 
 A normal HR request is accepted when it remains inside both limits.
 
-### Oversized request
+#### Oversized Request
 
 The demonstration sends:
 
@@ -1178,7 +1200,7 @@ against a:
 
 The request is rejected before downstream execution.
 
-### Cost-limit request
+#### Cost-limit Request
 
 A separate request uses:
 
@@ -1198,7 +1220,7 @@ This proves that the token and cost controls are separate governance conditions.
 
 ---
 
-# 5. Response Caching
+## 5. Response Caching
 
 Task 16 is implemented in:
 
@@ -1240,9 +1262,7 @@ The cache is applied only to grounded-generation/RAG.
 
 The application-status lookup is deliberately **not cached**, because application status can change and a cached status could become stale.
 
----
-
-## Task 16 Demonstration
+### Task 16 Demonstration
 
 The demonstration sends two logically identical queries with different casing/whitespace.
 
@@ -1250,11 +1270,15 @@ Expected evidence:
 
 ```text
 First request:
+
 CACHE MISS
+
 REAL_RAG_CALL_COUNT = 1
 
 Second normalized request:
+
 CACHE HIT
+
 REAL_RAG_CALL_COUNT remains 1
 ```
 
@@ -1266,7 +1290,7 @@ Timing is printed as secondary evidence, while the real-RAG call counter is the 
 
 # Key Design Choices
 
-## Why local embeddings?
+## Why Local Embeddings?
 
 The project uses:
 
@@ -1278,7 +1302,7 @@ to keep the embedding stage local and reproducible.
 
 ---
 
-## Why fixed-size chunking?
+## Why Fixed-size Chunking?
 
 Both strategies achieved full recall in the Task 5 test, but fixed-size chunking achieved higher average precision.
 
@@ -1292,7 +1316,7 @@ was selected for the deployed path.
 
 ---
 
-## Why a calibrated threshold?
+## Why a Calibrated Threshold?
 
 A threshold such as `0.5` or `0.7` was not chosen arbitrarily.
 
@@ -1306,7 +1330,7 @@ from those observed values.
 
 ---
 
-## Why separate retrieval and lookup agents?
+## Why Separate Retrieval and Lookup Agents?
 
 Knowledge-base retrieval and application lookup have different responsibilities.
 
@@ -1316,7 +1340,7 @@ The privileged application lookup tool belongs only to the Lookup Agent.
 
 ---
 
-## Why no lookup caching?
+## Why No Lookup Caching?
 
 Application status is mutable.
 
@@ -1338,14 +1362,14 @@ This also makes the acceptance demonstrations easier to reproduce.
 
 # How to Run
 
-## 1. Clone the repository
+## 1. Clone the Repository
 
 ```powershell
 git clone https://github.com/Dipanshu956/naukri-domain-support-agent.git
 cd naukri-domain-support-agent
 ```
 
-## 2. Create a virtual environment
+## 2. Create a Virtual Environment
 
 ```powershell
 python -m venv venv
@@ -1357,7 +1381,7 @@ Activate it:
 .\venv\Scripts\Activate.ps1
 ```
 
-## 3. Install dependencies
+## 3. Install Dependencies
 
 ```powershell
 pip install -r requirements.txt
@@ -1365,7 +1389,7 @@ pip install -r requirements.txt
 
 ---
 
-## 4. Generate and validate the dataset
+## 4. Generate and Validate the Dataset
 
 ```powershell
 python dataset.py
@@ -1381,7 +1405,7 @@ and validates the required dataset constraints.
 
 ---
 
-## 5. Build and evaluate the RAG pipeline
+## 5. Build and Evaluate the RAG Pipeline
 
 ```powershell
 python rag_core.py
@@ -1391,7 +1415,7 @@ This loads the knowledge base, creates both chunking strategies, loads the embed
 
 ---
 
-## 6. Run CrewAI demonstrations
+## 6. Run CrewAI Demonstrations
 
 ```powershell
 python crew_agents.py
@@ -1408,7 +1432,7 @@ memory behavior
 
 ---
 
-## 7. Run guardrail demonstrations
+## 7. Run Guardrail Demonstrations
 
 ```powershell
 python guardrails.py
@@ -1418,7 +1442,7 @@ This demonstrates the input/output safety controls.
 
 ---
 
-## 8. Run the Task 14 AutoGen review
+## 8. Run the Task 14 AutoGen Review
 
 ```powershell
 python autogen_review.py
@@ -1436,7 +1460,7 @@ structured verdict
 
 ---
 
-## 9. Run Task 15 governance
+## 9. Run Task 15 Governance
 
 ```powershell
 python governance.py
@@ -1454,7 +1478,7 @@ fail-closed oversized-request handling
 
 ---
 
-## 10. Run Task 16 response caching
+## 10. Run Task 16 Response Caching
 
 ```powershell
 python response_cache.py
@@ -1472,7 +1496,7 @@ duplicate RAG call avoided
 
 ---
 
-## 11. Run Task 13 evaluation
+## 11. Run Task 13 Evaluation
 
 ```powershell
 python eval/task13_judge_eval.py
@@ -1487,7 +1511,7 @@ eval/task13_results.csv
 
 ---
 
-## 12. Start the FastAPI server
+## 12. Start the FastAPI Server
 
 ```powershell
 uvicorn api:app --reload
@@ -1503,7 +1527,7 @@ The interactive API documentation is available through the normal FastAPI `/docs
 
 The repository contains implementation and evaluation artifacts for the major capstone requirements.
 
-## RAG evidence
+## RAG Evidence
 
 ```text
 rag_core.py
@@ -1522,7 +1546,7 @@ contains:
 
 ---
 
-## CrewAI evidence
+## CrewAI Evidence
 
 ```text
 crew_agents.py
@@ -1539,7 +1563,7 @@ contains:
 
 ---
 
-## Guardrail evidence
+## Guardrail Evidence
 
 ```text
 guardrails.py
@@ -1553,7 +1577,7 @@ contains:
 
 ---
 
-## API evidence
+## API Evidence
 
 ```text
 api.py
@@ -1572,7 +1596,7 @@ contain:
 
 ---
 
-## Evaluation evidence
+## Evaluation Evidence
 
 ```text
 eval/task13_judge_eval.py
@@ -1584,7 +1608,7 @@ contain the Task 13 evaluation setup and results.
 
 ---
 
-## Governance evidence
+## Governance Evidence
 
 ```text
 autogen_review.py
@@ -1602,7 +1626,7 @@ contain:
 
 ---
 
-## Caching evidence
+## Caching Evidence
 
 ```text
 response_cache.py
@@ -1746,10 +1770,12 @@ fixed_chunks
 
 ```text
 fixed_chunks:
+
 Precision = 0.6667
 Recall    = 1.0000
 
 sentence_chunks:
+
 Precision = 0.4333
 Recall    = 1.0000
 ```
@@ -1759,10 +1785,10 @@ Recall    = 1.0000
 ```text
 Queries = 15
 
-Accuracy      = 0.9244
-Grounding     = 0.5439
-Completeness  = 0.8489
-Safety        = 1.0000
+Accuracy     = 0.9244
+Grounding    = 0.5439
+Completeness = 0.8489
+Safety       = 1.0000
 ```
 
 ## Governance
@@ -1794,7 +1820,7 @@ cache hit -> duplicate RAG call skipped
 
 The project intentionally keeps its important evaluation choices explicit.
 
-### Dataset
+## Dataset
 
 ```text
 SEED = 42
@@ -1815,7 +1841,7 @@ The flagged-review band is:
 10%-30%
 ```
 
-### RAG
+## RAG
 
 ```text
 Embedding:
@@ -1837,16 +1863,17 @@ Threshold:
 0.3495
 ```
 
-### Runtime
+## Runtime
 
 ```text
 MOCK_LLM = True
 
 CREWAI_DISABLE_TELEMETRY = true
+
 OTEL_SDK_DISABLED = true
 ```
 
-### Evaluation
+## Evaluation
 
 Task 13 uses exactly:
 
@@ -1857,7 +1884,7 @@ Task 13 uses exactly:
 1 application lookup query
 ```
 
-### Caching
+## Caching
 
 The cache is:
 
@@ -1923,7 +1950,7 @@ The result is a reproducible capstone implementation that demonstrates how a dom
 
 ---
 
-## Main Files
+# Main Files
 
 * [`dataset.py`](dataset.py)
 * [`rag_core.py`](rag_core.py)
@@ -1945,14 +1972,24 @@ The result is a reproducible capstone implementation that demonstrates how a dom
 
 ```text
 Tasks 1-16 implemented
-Dataset validated
-RAG evaluated
-CrewAI workflow implemented
-Guardrails implemented
-FastAPI implemented
-JSONL logging implemented
-Task 13 evaluation completed
-AutoGen governance review implemented
-Task 15 governance controls implemented
-Task 16 response caching implemented
 
+Dataset validated
+
+RAG evaluated
+
+CrewAI workflow implemented
+
+Guardrails implemented
+
+FastAPI implemented
+
+JSONL logging implemented
+
+Task 13 evaluation completed
+
+AutoGen governance review implemented
+
+Task 15 governance controls implemented
+
+Task 16 response caching implemented
+```
