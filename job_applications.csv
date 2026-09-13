@@ -1,0 +1,51 @@
+record_id,candidate_name,experience,skills,notice_period,education,location,category,status,expected_salary_inr,days_since_created,flagged_priority_review
+APP001,Riya Gupta,4,"CRM, Lead Generation, Communication, Sales",45,B.E.,Chennai,Sales Associate,Rejected,940000,7,False
+APP002,Nikhil Agarwal,2,"Business Development, CRM, Communication, Sales",0,B.Tech,Gurgaon,Sales Associate,Screening,570000,2,False
+APP003,Neha Singh,4,"Talent Acquisition, Excel, HRMS, Onboarding",45,B.E.,Nashik,HR Executive,Applied,890000,5,False
+APP004,Rahul Singh,7,"Talent Acquisition, Excel, HRMS, Onboarding",45,M.Tech,Nashik,HR Executive,Rejected,1420000,21,False
+APP005,Vikram Joshi,8,"Python, SQL, Power BI, Excel",15,B.Tech,Gurgaon,Data Analyst,Interview Scheduled,1430000,23,False
+APP006,Priya Sharma,6,"Recruitment, Payroll, Employee Engagement, HRMS",45,MCA,Gurgaon,HR Executive,Screening,1180000,1,False
+APP007,Amit Reddy,9,"Java, Spring Boot, SQL, AWS",0,MCA,Mumbai,Software Engineer,Rejected,1800000,12,False
+APP008,Manish Joshi,2,"Python, SQL, FastAPI, AWS",60,B.Tech,Nashik,Software Engineer,Screening,860000,16,False
+APP009,Karan Joshi,6,"Python, Django, REST API, PostgreSQL",15,M.Tech,Nashik,Software Engineer,Applied,1380000,21,False
+APP010,Nikhil Verma,5,"SQL, Excel, Tableau, Power BI",0,MBA,Mumbai,Data Analyst,Screening,1020000,17,False
+APP011,Saurabh Shah,4,"Product Strategy, Agile, Jira, Analytics",30,B.Tech,Hyderabad,Product Manager,Offered,1230000,9,False
+APP012,Nikhil Reddy,3,"Business Development, CRM, Communication, Sales",90,M.Tech,Gurgaon,Sales Associate,Rejected,690000,21,False
+APP013,Pooja Nair,9,"SQL, Tableau, Python, Statistics",0,B.E.,Chennai,Data Analyst,Interview Scheduled,1580000,28,True
+APP014,Riya Kumar,2,"Python, Django, REST API, PostgreSQL",30,MCA,Hyderabad,Software Engineer,Screening,800000,6,False
+APP015,Saurabh Gupta,5,"Python, Django, REST API, PostgreSQL",0,B.Tech,Nashik,Software Engineer,Offered,1260000,1,False
+APP016,Arjun Agarwal,1,"SQL, Excel, Tableau, Power BI",90,M.Tech,Bangalore,Data Analyst,Screening,580000,17,False
+APP017,Riya Sharma,7,"SQL, Excel, Tableau, Power BI",0,B.E.,Gurgaon,Data Analyst,Screening,1280000,26,False
+APP018,Manish Mehta,6,"Product Strategy, Agile, Jira, Analytics",45,B.E.,Pune,Product Manager,Rejected,1560000,11,False
+APP019,Meera Joshi,1,"Java, Spring Boot, SQL, AWS",90,B.Tech,Delhi,Software Engineer,Applied,700000,28,False
+APP020,Simran Yadav,7,"Java, Spring Boot, SQL, AWS",15,B.E.,Bangalore,Software Engineer,Offered,1610000,0,False
+APP021,Kavya Agarwal,3,"Product Analytics, Scrum, User Research, Jira",90,B.E.,Chennai,Product Manager,Rejected,1000000,25,False
+APP022,Aditya Reddy,2,"Recruitment, HRMS, Payroll, Employee Relations",45,B.E.,Hyderabad,HR Executive,Interview Scheduled,720000,11,False
+APP023,Anjali Joshi,5,"Python, SQL, FastAPI, AWS",90,B.E.,Nashik,Software Engineer,Applied,1270000,8,False
+APP024,Karan Verma,2,"Recruitment, Payroll, Employee Engagement, HRMS",60,MBA,Gurgaon,HR Executive,Offered,690000,30,False
+APP025,Sneha Nair,1,"Python, Django, REST API, PostgreSQL",15,MCA,Chennai,Software Engineer,Screening,570000,3,False
+APP026,Kavya Verma,10,"Python, Django, REST API, PostgreSQL",45,MCA,Gurgaon,Software Engineer,Offered,1800000,12,False
+APP027,Rohan Shah,10,"Product Strategy, Agile, Jira, Analytics",90,MBA,Pune,Product Manager,Interview Scheduled,1800000,29,False
+APP028,Rohan Verma,9,"Salesforce, Negotiation, Lead Generation, CRM",0,M.Tech,Delhi,Sales Associate,Rejected,1490000,23,False
+APP029,Aditya Yadav,5,"Talent Acquisition, Excel, HRMS, Onboarding",60,B.E.,Hyderabad,HR Executive,Interview Scheduled,1120000,21,False
+APP030,Neha Deshmukh,7,"Product Analytics, Scrum, User Research, Jira",30,MBA,Gurgaon,Product Manager,Interview Scheduled,1650000,9,False
+APP031,Rohan Singh,5,"Recruitment, Payroll, Employee Engagement, HRMS",60,M.Tech,Noida,HR Executive,Applied,1120000,14,False
+APP032,Neha Kulkarni,4,"Recruitment, HRMS, Payroll, Employee Relations",30,MCA,Delhi,HR Executive,Interview Scheduled,890000,26,False
+APP033,Pooja Joshi,4,"CRM, Lead Generation, Communication, Sales",15,B.Tech,Pune,Sales Associate,Applied,880000,15,False
+APP034,Amit Gupta,10,"Talent Acquisition, Excel, HRMS, Onboarding",90,MCA,Hyderabad,HR Executive,Interview Scheduled,1780000,15,False
+APP035,Anjali Kumar,7,"SQL, Tableau, Python, Statistics",90,B.Tech,Mumbai,Data Analyst,Rejected,1390000,7,True
+APP036,Priya Mehta,3,"Java, Spring Boot, SQL, AWS",0,MBA,Bangalore,Software Engineer,Screening,990000,21,False
+APP037,Riya Deshmukh,9,"Roadmapping, Agile, SQL, Stakeholder Management",45,MCA,Gurgaon,Product Manager,Rejected,1800000,26,False
+APP038,Nikhil Nair,9,"Product Strategy, Agile, Jira, Analytics",90,MBA,Noida,Product Manager,Screening,1800000,24,True
+APP039,Karan Agarwal,4,"SQL, Tableau, Python, Statistics",45,B.E.,Chennai,Data Analyst,Applied,990000,2,False
+APP040,Anjali Shah,5,"Salesforce, Negotiation, Lead Generation, CRM",30,MCA,Mumbai,Sales Associate,Rejected,980000,4,True
+APP041,Vikram Yadav,4,"CRM, Lead Generation, Communication, Sales",0,MBA,Nashik,Sales Associate,Rejected,900000,17,False
+APP042,Kavya Sharma,8,"Java, Spring Boot, SQL, AWS",45,MBA,Pune,Software Engineer,Screening,1760000,15,False
+APP043,Meera Shah,1,"Python, SQL, Power BI, Excel",45,MCA,Gurgaon,Data Analyst,Applied,520000,15,False
+APP044,Karan Singh,4,"Salesforce, Negotiation, Lead Generation, CRM",0,MBA,Delhi,Sales Associate,Offered,920000,23,False
+APP045,Vikram Deshmukh,3,"Recruitment, Payroll, Employee Engagement, HRMS",0,MBA,Pune,HR Executive,Interview Scheduled,760000,20,False
+APP046,Vikram Reddy,7,"Roadmapping, Agile, SQL, Stakeholder Management",15,B.Tech,Chennai,Product Manager,Interview Scheduled,1750000,10,True
+APP047,Aditya Shah,4,"Salesforce, Negotiation, Lead Generation, CRM",30,B.Tech,Noida,Sales Associate,Interview Scheduled,820000,23,False
+APP048,Priya Verma,9,"SQL, Excel, Tableau, Power BI",90,B.Tech,Pune,Data Analyst,Rejected,1550000,30,True
+APP049,Rohan Reddy,4,"SQL, Excel, Tableau, Power BI",60,B.E.,Hyderabad,Data Analyst,Screening,900000,15,False
+APP050,Nikhil Yadav,2,"Salesforce, Negotiation, Lead Generation, CRM",30,B.E.,Mumbai,Sales Associate,Offered,610000,30,False
