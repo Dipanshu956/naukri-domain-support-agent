@@ -1,105 +1,138 @@
 # ============================================================
 # Task 7 + Task 8 + Task 9 + Task 16 - CrewAI HR Automation
+# Naukri.com Domain Support Agent
 # ============================================================
 #
 # This module implements:
 #
 # Task 7:
 #   - Three CrewAI agents
-#   - RAG retrieval tool
-#   - Application lookup tool
+#   - Retrieval Agent with rag_search
+#   - Lookup Agent with check_job_application_status
+#   - Response Composer
 #   - Sequential CrewAI workflow
+#   - CrewAI .kickoff() execution
 #
 # Task 8:
-#   - Session-based conversation memory
+#   - InMemoryChatMessageHistory
+#   - RunnableWithMessageHistory
 #   - Same-session application-ID recovery
 #   - Fresh-session isolation
 #
 # Task 9:
-#   - Pydantic structured CrewResponse
+#   - Pydantic CrewResponse schema
 #   - Explicit response validation
 #
 # Task 16:
-#   - Live normalized-query response caching for the RAG tool
-#   - The actual uncached RAG implementation is exposed through
-#     _real_rag_search()
-#   - The public CrewAI rag_search() wrapper calls the cache
+#   - Normalized-query response cache
+#   - Live cache integration inside rag_search()
+#   - Real RAG function kept separate as _real_rag_search()
 #
-# IMPORTANT:
-# response_cache.py does NOT import crew_agents at module level.
-# Instead, crew_agents.py registers _real_rag_search() with the
-# response-cache module after the real function has been defined.
-# This avoids circular imports.
 # ============================================================
+# IMPORTANT TELEMETRY REQUIREMENT
+# ============================================================
+#
+# The capstone requires the graded MOCK_LLM workflow to run
+# without intentional outbound telemetry.
+#
+# CrewAI and OpenTelemetry configuration therefore MUST be
+# established BEFORE importing CrewAI.
+#
+# Do not move these environment assignments below the CrewAI
+# imports.
+# ============================================================
+
+
+# ============================================================
+# CREWAI / OPENTELEMETRY SAFETY SETTINGS
+# ============================================================
+
+# os is imported first because the environment variables must be
+# configured before CrewAI/OpenTelemetry modules are imported.
+import os
+
+# Disable CrewAI telemetry unless the user has explicitly supplied
+# another value in the environment.
+os.environ.setdefault(
+    "CREWAI_DISABLE_TELEMETRY",
+    "true",
+)
+
+# Disable OpenTelemetry SDK behavior as a second defensive measure.
+os.environ.setdefault(
+    "OTEL_SDK_DISABLED",
+    "true",
+)
 
 
 # ============================================================
 # STANDARD-LIBRARY IMPORTS
 # ============================================================
 
-# inspect is used to inspect Python function/tool signatures when
-# determining which argument a CrewAI tool accepts.
+# inspect is used to inspect tool argument schemas/signatures.
+# This supports schema-based tool dispatch instead of fragile
+# name-based substring matching.
 import inspect
 
-# json is used to serialize Task 6 lookup results into JSON text
-# and to create JSON Action Input strings for the MOCK_LLM.
+# json is used for:
+#   - serialization of lookup results
+#   - construction of deterministic Action Input values
 import json
 
-# re is used for application-ID extraction, message parsing,
-# tool-action detection, and Composer-context parsing.
+# re is used for:
+#   - APP### record-ID extraction
+#   - safe parser logic
+#   - task/context extraction
+#   - Action-line detection
 import re
 
-# Optional is used because record_id can legitimately be absent
-# for normal knowledge-base questions.
-from typing import Optional
-
-# ContextVar stores the current memory session ID separately for
-# each execution context, which is useful for API and concurrent use.
+# ContextVar stores the current session identifier without using
+# one unsafe global value across concurrent request contexts.
 from contextvars import ContextVar
+
+# Optional allows record_id to be absent for normal HR policy
+# questions.
+from typing import Optional
 
 
 # ============================================================
 # THIRD-PARTY IMPORTS
 # ============================================================
 
-# BaseModel defines the Pydantic schema required for Task 9.
+# BaseModel defines the Task 9 structured response schema.
 from pydantic import BaseModel
 
-# ValidationError allows Task 9 validation failures to be handled
-# explicitly instead of crashing the complete workflow.
+# ValidationError provides explicit handling of schema failures.
 from pydantic import ValidationError
 
-# Agent represents an individual CrewAI worker.
+# Agent represents one CrewAI worker.
 from crewai import Agent
 
-# Crew represents the complete multi-agent CrewAI workflow.
+# Crew represents the complete multi-agent workflow.
 from crewai import Crew
 
-# Process provides the sequential processing mode required by
-# the capstone architecture.
+# Process provides the required sequential execution mode.
 from crewai import Process
 
-# Task represents the work assigned to each CrewAI agent.
+# Task represents work assigned to one CrewAI agent.
 from crewai import Task
 
-# BaseLLM is the CrewAI base class required for the deterministic
-# local MOCK_LLM implementation.
+# BaseLLM is CrewAI's documented extension point used here for
+# the deterministic local MOCK_LLM implementation.
 from crewai.llms.base_llm import BaseLLM
 
-# The @tool decorator converts normal Python functions into
-# CrewAI-callable tools.
+# tool converts Python functions into CrewAI tools.
 from crewai.tools import tool
 
-# InMemoryChatMessageHistory stores user/assistant messages for
-# each Task 8 session.
+# LangChain stores conversation messages for Task 8 memory.
 from langchain_core.chat_history import InMemoryChatMessageHistory
 
-# RunnableLambda wraps our memory-aware Python function as a
-# LangChain runnable.
+# RunnableLambda allows the memory-aware function to participate
+# in LangChain's runnable interface.
 from langchain_core.runnables import RunnableLambda
 
-# RunnableWithMessageHistory connects the runnable to the
-# appropriate per-session message history.
+# RunnableWithMessageHistory connects the runnable with a
+# session-specific message-history provider.
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 
@@ -107,21 +140,24 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 # PROJECT-MODULE IMPORTS
 # ============================================================
 
-# Reuse the original Task 6 lookup implementation instead of
-# duplicating application-data and escalation-score logic.
+# Reuse the authoritative Task 6 application lookup implementation.
+#
+# This avoids duplicating:
+#   - CSV lookup logic
+#   - escalation formula
+#   - escalation threshold
 from task6_tool import (
     check_job_application_status
     as task6_check_job_application_status
 )
 
-# Reuse the Task 3-5 RAG infrastructure for document loading,
-# embeddings, ChromaDB, retrieval, and threshold calculation.
+# Reuse the shared Part 1 RAG infrastructure.
 import rag_core
 
-# Import the Task 16 response-cache module.
+# Import the Task 16 cache implementation.
 #
-# The cache module does not import this file at module level,
-# so this import does not create the circular dependency problem.
+# response_cache.py does not import crew_agents at module level,
+# avoiding a circular import.
 import response_cache
 
 
@@ -131,27 +167,33 @@ import response_cache
 
 class CrewResponse(BaseModel):
     """
-    Define the structured response returned by the CrewAI layer.
+    Pydantic schema required for every final CrewAI response.
 
-    This is the Task 9 response contract:
-        final_answer -> final user-facing response text
-        query        -> current user query
-        record_id     -> selected application ID when applicable
+    Fields
+    ------
+    final_answer : str
+        User-facing answer.
+
+    query : str
+        Current user query.
+
+    record_id : Optional[str]
+        Application ID when an application lookup occurred.
+        None for ordinary knowledge-base questions.
     """
 
-    # Store the final answer that should be shown to the user.
+    # Final response returned to the caller.
     final_answer: str
 
-    # Store the current user question used by the crew.
+    # Current user question.
     query: str
 
-    # Store an application ID when a lookup occurred.
-    # It remains None for normal HR knowledge-base questions.
+    # Optional application record identifier.
     record_id: Optional[str] = None
 
 
-# Task 9 requires a response-format variable that points to the
-# Pydantic response schema.
+# The capstone asks for a response-format variable associated with
+# the Pydantic response schema.
 response_format = CrewResponse
 
 
@@ -162,49 +204,67 @@ response_format = CrewResponse
 def validate_crew_response(
     crew_result,
     query: str,
-    record_id: Optional[str] = None
+    record_id: Optional[str] = None,
 ) -> Optional[CrewResponse]:
     """
-    Validate an actual CrewAI kickoff result using Pydantic.
+    Validate the actual CrewAI kickoff result against CrewResponse.
 
-    Parameters:
-        crew_result:
-            Final result returned by CrewAI kickoff().
+    Parameters
+    ----------
+    crew_result :
+        Object/string returned by CrewAI kickoff().
 
-        query:
-            Current user query.
+    query : str
+        User query associated with the response.
 
-        record_id:
-            Selected application ID, when available.
+    record_id : Optional[str]
+        Application ID if a lookup was performed.
 
-    Returns:
-        CrewResponse when validation succeeds.
-        None when validation fails.
+    Returns
+    -------
+    Optional[CrewResponse]
+        Validated Pydantic object, or None on validation failure.
     """
 
     try:
-        # Convert the CrewAI final result to text because the
-        # user-facing answer must be a string.
-        final_answer = str(crew_result)
 
-        # Build the required structured Pydantic response.
+        # Convert the CrewAI final result into the string expected
+        # by the Pydantic schema.
+        final_answer = str(
+            crew_result
+        )
+
+        # Construct and therefore validate the structured response.
         validated_response = response_format(
             final_answer=final_answer,
             query=query,
-            record_id=record_id
+            record_id=record_id,
         )
 
-        # Print the validated structure as Task 9 evidence.
-        print("\n[TASK 9] Validated CrewResponse:")
-        print(validated_response.model_dump())
+        # Print validation evidence for Task 9.
+        print(
+            "\n[TASK 9] Validated CrewResponse:"
+        )
 
+        print(
+            validated_response.model_dump()
+        )
+
+        # Return the validated response.
         return validated_response
 
     except ValidationError as error:
-        # Report schema-validation problems without terminating
-        # the whole Python process unexpectedly.
-        print("\n[TASK 9] CrewResponse validation failed:")
-        print(error)
+
+        # Keep validation failures visible without throwing an
+        # unexpected exception through the complete demonstration.
+        print(
+            "\n[TASK 9] CrewResponse validation failed:"
+        )
+
+        print(
+            error
+        )
+
         return None
 
 
@@ -212,10 +272,9 @@ def validate_crew_response(
 # TOOL RESULT STORAGE
 # ============================================================
 
-# Store the latest result produced by each CrewAI tool.
+# Store the latest result produced by each deterministic CrewAI tool.
 #
-# The deterministic MOCK_LLM uses this dictionary to obtain the
-# tool output when constructing the next assistant response.
+# MOCK_LLM uses this dictionary after the tool runs.
 LAST_TOOL_RESULT = {}
 
 
@@ -223,26 +282,24 @@ LAST_TOOL_RESULT = {}
 # RAG STATE
 # ============================================================
 
-# Store whether the latest real RAG execution was sufficiently
-# grounded according to the calibrated similarity threshold.
+# Whether the most recent real RAG execution was grounded.
 LAST_RAG_GROUNDED = None
 
-# Store the latest top-1 similarity score for downstream
-# guardrail and evaluation logic.
+# Top-1 similarity from the latest real RAG execution.
 LAST_RAG_TOP_SIMILARITY = None
 
-# Store the calibrated threshold used by the latest real RAG run.
+# Threshold used by the latest real RAG execution.
 LAST_RAG_THRESHOLD = None
 
 
 # ============================================================
-# RAG CHUNKING CONFIGURATION
+# LIVE FIXED-CHUNK CONFIGURATION
 # ============================================================
 
-# Task 5 uses 200-character fixed-size chunks.
+# The Task 3/5 fixed chunk design.
 FIXED_CHUNK_SIZE = 200
 
-# Task 5 uses 50-character overlap between fixed-size chunks.
+# Required overlap between fixed-size chunks.
 FIXED_CHUNK_OVERLAP = 50
 
 
@@ -250,84 +307,89 @@ FIXED_CHUNK_OVERLAP = 50
 # LIVE WORD-SAFE FIXED CHUNKING
 # ============================================================
 
-def build_word_safe_fixed_chunks(documents):
+def build_word_safe_fixed_chunks(
+    documents,
+):
     """
-    Build fixed-size RAG chunks while avoiding unnecessary
-    mid-word boundaries.
+    Build the selected production fixed-size chunks.
 
-    The Task 5 configuration remains:
-        chunk size = 200 characters
-        overlap    = 50 characters
+    This is the live CrewAI integration refinement of the
+    fixed-size strategy.
 
-    The live CrewAI implementation moves boundaries backward to
-    whitespace when necessary so words are not cut in half.
+    It keeps:
+        chunk size = 200
+        overlap    = 50
 
-    Parameters:
-        documents:
-            Knowledge-base documents returned by rag_core.
+    while moving boundaries to whitespace where possible so that
+    the live retrieval path avoids unnecessary mid-word splits.
 
-    Returns:
-        List of dictionaries containing:
-            id
-            text
-            source
+    Parameters
+    ----------
+    documents : list[dict]
+        Knowledge-base documents.
+
+    Returns
+    -------
+    list[dict]
+        Chunk dictionaries containing id/text/source.
     """
 
-    # Store every generated chunk here.
+    # Store all generated live chunks.
     safe_chunks = []
 
-    # Process each knowledge-base document independently.
+    # Process one source document at a time.
     for document in documents:
 
-        # Read the actual document body.
+        # Read source text.
         text = document["text"]
 
-        # Read the source/document name.
+        # Read parent source name.
         source = document["source"]
 
-        # Keep the required Task 5 chunk configuration.
+        # Preserve the required chunking configuration.
         chunk_size = FIXED_CHUNK_SIZE
         overlap = FIXED_CHUNK_OVERLAP
 
         # Start at the beginning of the document.
         start = 0
 
-        # Continue until the whole document has been processed.
+        # Continue until the full document is processed.
         while start < len(text):
 
-            # Calculate the normal fixed-size end boundary.
+            # Calculate normal fixed-size endpoint.
             end = min(
                 start + chunk_size,
-                len(text)
+                len(text),
             )
 
-            # If the chunk ends in the middle of a word,
-            # move the boundary backward to the nearest space.
+            # If possible, move the endpoint backward to a nearby
+            # whitespace boundary.
             if end < len(text):
 
                 whitespace_position = text.rfind(
                     " ",
                     start,
-                    end
+                    end,
                 )
 
                 if whitespace_position > start:
+
                     end = whitespace_position
 
-            # Remove leading/trailing whitespace from the chunk.
-            chunk_text = text[start:end].strip()
+            # Remove surrounding whitespace.
+            chunk_text = text[
+                start:end
+            ].strip()
 
-            # Only store non-empty chunks.
+            # Keep non-empty chunks.
             if chunk_text:
 
-                # Create a unique identifier required by
-                # rag_core.store_chunks().
+                # Use a deterministic source/index-based ID.
                 chunk_id = (
-                    f"{source}_fixed_{len(safe_chunks)}"
+                    f"{source}_fixed_"
+                    f"{len(safe_chunks)}"
                 )
 
-                # Store the chunk in the structure expected by
-                # the existing RAG storage implementation.
                 safe_chunks.append(
                     {
                         "id": chunk_id,
@@ -336,79 +398,89 @@ def build_word_safe_fixed_chunks(documents):
                     }
                 )
 
-            # Stop when the document has been completely consumed.
+            # Stop when the document has been fully consumed.
             if end >= len(text):
                 break
 
-            # Preserve the required 50-character overlap concept.
+            # Move forward while preserving the requested overlap.
             next_start = max(
                 0,
-                end - overlap
+                end - overlap,
             )
 
-            # Align the next starting point to whitespace when
-            # the overlap position lands inside a word.
+            # Align the next start point to whitespace where possible.
             if next_start > 0:
 
                 previous_whitespace_position = text.rfind(
                     " ",
                     0,
-                    next_start
+                    next_start,
                 )
 
                 if previous_whitespace_position >= 0:
 
                     next_start = (
-                        previous_whitespace_position + 1
+                        previous_whitespace_position
+                        + 1
                     )
 
-                else:
-
-                    next_start = 0
-
-            # Prevent an infinite loop if the calculated overlap
-            # does not move beyond the previous start point.
+            # Prevent an infinite loop if the overlap does not
+            # advance beyond the previous start point.
             if next_start <= start:
+
                 next_start = end
 
-            # Start the next chunk.
+            # Continue from the new start position.
             start = next_start
 
+    # Return all production chunks.
     return safe_chunks
 
 
 # ============================================================
-# PREPARE RAG SYSTEM
+# PREPARE LIVE RAG SYSTEM
 # ============================================================
 
 def prepare_rag_system():
     """
-    Prepare the shared RAG resources used by the live CrewAI tool.
+    Prepare the RAG resources used by the live CrewAI system.
 
-    The selected deployed collection is fixed_chunks.
+    IMPORTANT CORRECTION
+    --------------------
+    The production collection is fixed_chunks.
 
-    The collection is rebuilt using the current word-safe chunker
-    so stale ChromaDB entries from an earlier broken chunking
-    implementation cannot remain in the live collection.
+    The RAG threshold is calibrated using ONLY that collection.
 
-    Returns:
-        model
-        fixed_collection
-        calibrated_threshold
+    Returns
+    -------
+    tuple
+        (
+            model,
+            fixed_collection,
+            calibrated_threshold
+        )
     """
 
-    # Load the project's HR knowledge-base documents.
+    # Load the project's knowledge-base documents.
     documents = rag_core.load_documents(
         rag_core.KNOWLEDGE_BASE
     )
 
-    # Build the live fixed-size chunks.
+    # Reuse the Part 1 requirement to enforce at least 12 KB files.
+    if len(documents) < 12:
+
+        raise RuntimeError(
+            "At least 12 knowledge-base documents are required; "
+            f"found {len(documents)}."
+        )
+
+    # Build the selected live fixed-size chunks.
     fixed_chunks = build_word_safe_fixed_chunks(
         documents
     )
 
-    # Load the same SentenceTransformers model used by the
-    # existing Task 3-5 RAG implementation.
+    # Load the same local SentenceTransformers model used by the
+    # Part 1 RAG implementation.
     model = rag_core.SentenceTransformer(
         rag_core.MODEL_NAME
     )
@@ -418,8 +490,10 @@ def prepare_rag_system():
         path=rag_core.CHROMA_PATH
     )
 
-    # Remove any previous fixed_chunks collection so stale
-    # records cannot survive between runs.
+    # Delete the old production fixed collection before rebuilding.
+    #
+    # This prevents stale records from an older chunking implementation
+    # from remaining in the live collection.
     try:
 
         client.delete_collection(
@@ -427,73 +501,100 @@ def prepare_rag_system():
         )
 
     except Exception:
-        # On the first execution the collection may not exist.
-        # In that case, there is nothing to delete.
+
+        # The collection might not exist during first execution.
         pass
 
-    # Create a fresh fixed_chunks collection.
+    # Create a fresh production fixed_chunks collection.
     fixed_collection = rag_core.prepare_collection(
         client,
-        "fixed_chunks"
+        "fixed_chunks",
     )
 
-    # Store the newly generated word-safe fixed chunks.
+    # Store the current live fixed-size chunks.
     rag_core.store_chunks(
         fixed_collection,
         fixed_chunks,
-        model
-    )
-
-    # Prepare the sentence-based collection as well because
-    # Task 5's measured threshold process uses both collections.
-    sentence_collection = rag_core.prepare_collection(
-        client,
-        "sentence_chunks"
-    )
-
-    # Build sentence chunks only when the collection is empty.
-    if sentence_collection.count() == 0:
-
-        # Reuse the original Task 5 sentence-based chunker.
-        sentence_chunks = rag_core.build_chunks(
-            documents,
-            rag_core.sentence_based_chunks
-        )
-
-        # Store the sentence-based chunks.
-        rag_core.store_chunks(
-            sentence_collection,
-            sentence_chunks,
-            model
-        )
-
-    # Measure representative in-scope queries.
-    in_scope_scores = rag_core.measure_queries(
-        rag_core.IN_SCOPE_QUERIES,
         model,
-        fixed_collection,
-        sentence_collection
     )
 
-    # Measure representative out-of-scope queries.
-    out_of_scope_scores = rag_core.measure_queries(
-        rag_core.OUT_OF_SCOPE_QUERIES,
-        model,
-        fixed_collection,
-        sentence_collection
+    # ========================================================
+    # IMPORTANT TASK 4 CORRECTION
+    # ========================================================
+    #
+    # Do NOT calibrate by asking "which collection is stronger?"
+    #
+    # The live production path is fixed_chunks, so the threshold
+    # MUST come from fixed_chunks measurements only.
+    #
+    # Task 5 still evaluates sentence_chunks separately in rag_core.py.
+    # ========================================================
+
+    # Measure all in-scope calibration queries on fixed_chunks.
+    in_scope_scores = (
+        rag_core.measure_fixed_collection_queries(
+            rag_core.IN_SCOPE_QUERIES,
+            model,
+            fixed_collection,
+        )
     )
 
-    # Recalculate the calibrated threshold from those measured
-    # values rather than hard-coding the threshold here.
+    # Measure all out-of-scope calibration queries on fixed_chunks.
+    out_of_scope_scores = (
+        rag_core.measure_fixed_collection_queries(
+            rag_core.OUT_OF_SCOPE_QUERIES,
+            model,
+            fixed_collection,
+        )
+    )
+
+    # Calculate the empirical production threshold.
     threshold = rag_core.choose_threshold(
         in_scope_scores,
-        out_of_scope_scores
+        out_of_scope_scores,
     )
 
+    # Print the calibration evidence.
+    print(
+        "\n[PRODUCTION RAG CALIBRATION]"
+    )
+
+    print(
+        "Production collection: fixed_chunks"
+    )
+
+    print(
+        "\nIn-scope measurements:"
+    )
+
+    for item in in_scope_scores:
+
+        print(
+            f"{item['similarity']:.4f} | "
+            f"{item['query']}"
+        )
+
+    print(
+        "\nOut-of-scope measurements:"
+    )
+
+    for item in out_of_scope_scores:
+
+        print(
+            f"{item['similarity']:.4f} | "
+            f"{item['query']}"
+        )
+
+    print(
+        f"\nCalibrated RAG threshold: "
+        f"{threshold:.4f}"
+    )
+
+    # Return all resources required by the live RAG tool.
     return (
         model,
         fixed_collection,
-        threshold
+        threshold,
     )
 
 
@@ -501,120 +602,139 @@ def prepare_rag_system():
 # CREATE SHARED RAG RESOURCES
 # ============================================================
 
-# Prepare the model, selected collection, and calibrated threshold
-# once when this module is imported.
-RAG_MODEL, FIXED_COLLECTION, RAG_THRESHOLD = (
-    prepare_rag_system()
-)
+# Prepare the live RAG resources once when this module loads.
+#
+# This exposes:
+#   RAG_MODEL
+#   FIXED_COLLECTION
+#   RAG_THRESHOLD
+#
+# to the rest of the CrewAI implementation.
+(
+    RAG_MODEL,
+    FIXED_COLLECTION,
+    RAG_THRESHOLD,
+) = prepare_rag_system()
 
 
 # ============================================================
-# TASK 16 - REAL / UNCACHED RAG IMPLEMENTATION
+# TASK 16 - REAL / UNCACHED RAG
 # ============================================================
 
-def _real_rag_search(query: str) -> str:
+def _real_rag_search(
+    query: str,
+) -> str:
     """
-    Execute the actual underlying RAG retrieval operation.
+    Execute the real underlying RAG retrieval operation.
 
-    IMPORTANT:
-        This function contains the REAL RAG work and does NOT
-        perform response caching.
+    IMPORTANT
+    ---------
+    This function intentionally DOES NOT perform caching.
 
-    Task 16's response_cache.py registers this function and calls
-    it only when a normalized query is not already cached.
+    response_cache.py calls this function only when the normalized
+    query is not already cached.
 
-    Parameters:
-        query:
-            User query to search against the selected ChromaDB
-            fixed_chunks collection.
+    Parameters
+    ----------
+    query : str
+        User question.
 
-    Returns:
-        Retrieved knowledge-base text or the grounded fallback
-        message when retrieval is insufficient.
+    Returns
+    -------
+    str
+        Retrieved grounded context or fallback message.
     """
 
-    # This print statement provides visible evidence that the
-    # real RAG path actually executed.
-    print("\n[RAG TOOL] REAL RAG SEARCH EXECUTION")
-    print(f"[RAG TOOL] Query: {query}")
+    # Visible evidence that the real RAG path executed.
+    print(
+        "\n[RAG TOOL] REAL RAG SEARCH EXECUTION"
+    )
 
-    # Execute the actual vector retrieval against the selected
-    # fixed_chunks ChromaDB collection.
+    print(
+        f"[RAG TOOL] Query: {query}"
+    )
+
+    # Query ONLY the selected production fixed_chunks collection.
     results = rag_core.retrieve(
         FIXED_COLLECTION,
         query,
         RAG_MODEL,
-        top_k=rag_core.TOP_K
+        top_k=rag_core.TOP_K,
     )
 
-    # Update the RAG state globals for the latest execution.
+    # Tell Python that the following assignments update the module
+    # globals rather than creating local variables.
     global LAST_RAG_GROUNDED
     global LAST_RAG_TOP_SIMILARITY
     global LAST_RAG_THRESHOLD
 
-    # Store the threshold used for this execution.
+    # Record the threshold used by this execution.
     LAST_RAG_THRESHOLD = RAG_THRESHOLD
 
-    # Handle the case where ChromaDB returns no results.
+    # Handle the case where no vectors are returned.
     if not results:
 
         LAST_RAG_GROUNDED = False
         LAST_RAG_TOP_SIMILARITY = None
 
-        # Use the required grounded fallback.
+        # Return the capstone fallback.
         answer = (
             "I don't know based on the available knowledge base."
         )
 
-        # Store the fallback so the deterministic MOCK_LLM can
-        # consume the tool result.
-        LAST_TOOL_RESULT["rag_search"] = answer
+        # Save result for deterministic MOCK_LLM behavior.
+        LAST_TOOL_RESULT[
+            "rag_search"
+        ] = answer
 
         return answer
 
-    # Read the strongest retrieved similarity score.
-    top_similarity = results[0]["similarity"]
+    # Read the top-1 similarity score.
+    top_similarity = results[0][
+        "similarity"
+    ]
 
-    # Store the score for downstream evaluation and guardrails.
+    # Expose score to guardrails/evaluation.
     LAST_RAG_TOP_SIMILARITY = top_similarity
 
-    # A result is considered grounded when its top score meets
-    # or exceeds the calibrated threshold.
+    # Determine whether the result meets the calibrated threshold.
     LAST_RAG_GROUNDED = (
-        top_similarity >= RAG_THRESHOLD
+        top_similarity
+        >= RAG_THRESHOLD
     )
 
-    # Refuse to answer when retrieval is not sufficiently grounded.
+    # Refuse unsupported questions.
     if not LAST_RAG_GROUNDED:
 
         answer = (
             "I don't know based on the available knowledge base."
         )
 
-        # Store the fallback result.
-        LAST_TOOL_RESULT["rag_search"] = answer
+        LAST_TOOL_RESULT[
+            "rag_search"
+        ] = answer
 
         return answer
 
-    # Build the user-visible retrieved evidence from the top-K results.
+    # Store the retrieved evidence in a readable format.
     retrieved_text = []
 
-    # Format each result with source, similarity, and text.
+    # Include every returned chunk in the tool evidence.
     for result in results:
 
         source = result.get(
             "source",
-            "unknown"
+            "unknown",
         )
 
         text = result.get(
             "text",
-            ""
+            "",
         )
 
         similarity = result.get(
             "similarity",
-            0.0
+            0.0,
         )
 
         retrieved_text.append(
@@ -623,26 +743,28 @@ def _real_rag_search(query: str) -> str:
             f"Text: {text}"
         )
 
-    # Combine all retrieved results into a single tool output.
+    # Combine the retrieved chunks.
     answer = "\n\n".join(
         retrieved_text
     )
 
-    # Store the real RAG result for the Composer/MOCK_LLM.
-    LAST_TOOL_RESULT["rag_search"] = answer
+    # Save the real tool output.
+    LAST_TOOL_RESULT[
+        "rag_search"
+    ] = answer
 
+    # Return the retrieved grounded evidence.
     return answer
 
 
 # ============================================================
-# TASK 16 - REGISTER REAL RAG FUNCTION WITH CACHE
+# TASK 16 - REGISTER REAL RAG WITH CACHE
 # ============================================================
 
-# Tell response_cache.py which function represents the actual
-# expensive/real RAG execution path.
+# response_cache.py needs to know which function is the true
+# expensive/real RAG operation.
 #
-# response_cache.py will now call this function on cache MISS
-# and will avoid calling it on cache HIT.
+# It will call _real_rag_search() on cache MISS only.
 response_cache.configure_real_rag_function(
     _real_rag_search
 )
@@ -653,34 +775,50 @@ response_cache.configure_real_rag_function(
 # ============================================================
 
 @tool("rag_search")
-def rag_search(query: str) -> str:
+def rag_search(
+    query: str,
+) -> str:
     """
-    Search the HR knowledge base through the normalized-query cache.
+    Search the HR knowledge base using the Task 16 cache.
 
-    The cache is transparent to CrewAI:
-        CrewAI calls rag_search(query)
-        -> response_cache checks normalized query
-        -> CACHE MISS -> _real_rag_search(query)
-        -> CACHE HIT  -> previously stored result
+    Workflow
+    --------
+    CrewAI
+        |
+        v
+    rag_search(query)
+        |
+        v
+    normalized-query cache
+        |
+        +--> HIT  -> return cached result
+        |
+        +--> MISS -> _real_rag_search(query)
 
-    Application lookup is intentionally NOT routed through this
-    cache; only grounded-generation/RAG requests are cached.
+    Only RAG/grounded-generation is cached.
+    Application lookup is intentionally not cached.
     """
 
-    # Keep the external tool invocation visible in the terminal.
-    print("\n[RAG TOOL] rag_search() was invoked.")
-
-    # Let Task 16 decide whether the underlying real RAG function
-    # must actually execute.
-    cached_result = response_cache.cached_grounded_generation(
-        query
+    # Visible evidence that CrewAI invoked the actual tool.
+    print(
+        "\n[RAG TOOL] rag_search() was invoked."
     )
 
-    # Store whichever result was returned so the deterministic
-    # MOCK_LLM can consume the same output for both cache hits
-    # and cache misses.
-    LAST_TOOL_RESULT["rag_search"] = cached_result
+    # Ask the cache layer to decide whether the real RAG function
+    # needs to run.
+    cached_result = (
+        response_cache.cached_grounded_generation(
+            query
+        )
+    )
 
+    # Store the result so MOCK_LLM can use the same output whether
+    # it came from a cache hit or a real RAG execution.
+    LAST_TOOL_RESULT[
+        "rag_search"
+    ] = cached_result
+
+    # Return the cached or freshly generated result.
     return cached_result
 
 
@@ -690,49 +828,49 @@ def rag_search(query: str) -> str:
 
 @tool("check_job_application_status")
 def lookup_job_application_status(
-    record_id: str
+    record_id: str,
 ) -> str:
     """
-    Reuse the original Task 6 application lookup function.
+    Execute the authoritative Task 6 application lookup.
 
-    This tool is deliberately NOT cached because application data
-    can change and a cached application result could become stale.
+    The lookup tool is intentionally NOT cached because application
+    status can change over time.
 
-    Parameters:
-        record_id:
-            Application ID such as APP001.
+    Parameters
+    ----------
+    record_id : str
+        Application identifier such as APP001.
 
-    Returns:
-        JSON-formatted application lookup result or a readable
-        lookup error message.
+    Returns
+    -------
+    str
+        JSON-formatted lookup result or safe lookup error.
     """
 
-    # Print visible evidence showing that the privileged lookup
-    # tool was invoked.
+    # Visible evidence for Task 7 and Task 15.
     print(
         "\n[LOOKUP TOOL] "
         "check_job_application_status() was invoked."
     )
 
-    # Print the requested record ID.
     print(
         f"[LOOKUP TOOL] Record ID: {record_id}"
     )
 
     try:
 
-        # Reuse the original Task 6 implementation.
+        # Reuse Task 6 as the single source of truth.
         result = task6_check_job_application_status(
             record_id
         )
 
-        # Convert the dictionary into readable JSON for CrewAI.
+        # Convert the dictionary to readable JSON for CrewAI.
         answer = json.dumps(
             result,
-            indent=2
+            indent=2,
         )
 
-        # Save the lookup output for the deterministic MOCK_LLM.
+        # Store the result for deterministic Composer behavior.
         LAST_TOOL_RESULT[
             "check_job_application_status"
         ] = answer
@@ -741,10 +879,11 @@ def lookup_job_application_status(
 
     except ValueError as error:
 
-        # Convert invalid record errors into a safe tool response.
-        answer = f"Lookup error: {error}"
+        # Convert invalid lookup requests into a safe tool result.
+        answer = (
+            f"Lookup error: {error}"
+        )
 
-        # Store the error result as the latest lookup output.
         LAST_TOOL_RESULT[
             "check_job_application_status"
         ] = answer
@@ -756,53 +895,77 @@ def lookup_job_application_status(
 # CREWAI MESSAGE HELPERS
 # ============================================================
 
-def get_message_content(message) -> str:
+def get_message_content(
+    message,
+) -> str:
     """
-    Return message content from either a dictionary-like message
-    or a CrewAI/LangChain message object.
+    Extract content from dictionary-style or object-style messages.
+
+    Parameters
+    ----------
+    message :
+        CrewAI/LangChain message representation.
+
+    Returns
+    -------
+    str
+        Message content.
     """
 
-    # Handle dictionary-based message representations.
-    if isinstance(message, dict):
+    # Handle dictionary messages.
+    if isinstance(
+        message,
+        dict,
+    ):
 
         return str(
             message.get(
                 "content",
-                ""
+                "",
             )
         )
 
-    # Handle normal object-based messages.
+    # Handle normal message objects.
     return str(
         getattr(
             message,
             "content",
-            ""
+            "",
         )
     )
 
 
-def get_message_role(message) -> str:
+def get_message_role(
+    message,
+) -> str:
     """
-    Return the role of a message such as user or assistant.
+    Extract the role from a dictionary or message object.
+
+    Returns
+    -------
+    str
+        Role such as user or assistant.
     """
 
-    # Handle dictionary-based messages.
-    if isinstance(message, dict):
+    # Dictionary-style messages.
+    if isinstance(
+        message,
+        dict,
+    ):
 
         return str(
             message.get(
                 "role",
-                ""
+                "",
             )
         )
 
-    # Handle object-based messages.
+    # Object-style messages.
     return str(
         getattr(
             message,
             "role",
-            ""
+            "",
         )
     )
 
@@ -811,59 +974,71 @@ def get_message_role(message) -> str:
 # TOOL SCHEMA HELPERS
 # ============================================================
 
-def get_agent_tools(from_agent):
+def get_agent_tools(
+    from_agent,
+):
     """
-    Return the tools actually assigned to a CrewAI agent.
+    Return the tools actually assigned to an agent.
 
-    This supports Task 7 and Task 15 least-autonomy checks.
+    This function supports both:
+        - Task 7 tool wiring
+        - Task 15 least-autonomy verification
     """
 
     # No agent means no tools.
     if from_agent is None:
         return []
 
-    # Read the CrewAI agent's tools attribute.
+    # CrewAI stores tools on the agent object.
     tools = getattr(
         from_agent,
         "tools",
-        None
+        None,
     )
 
-    # Return an empty list when no tools are configured.
+    # Return a safe empty list if no tools were configured.
     if not tools:
         return []
 
     return tools
 
 
-def get_tool_argument_names(tool_object):
+def get_tool_argument_names(
+    tool_object,
+):
     """
-    Inspect a CrewAI tool's declared argument schema.
+    Inspect a tool's declared argument schema.
 
-    The implementation intentionally checks argument names rather
-    than guessing tool purpose from the tool name alone.
+    IMPORTANT
+    ---------
+    The capstone explicitly warns against dispatching tools using
+    generic substring checks on tool names.
 
-    Returns:
-        Set of argument names accepted by the tool.
+    This function therefore examines actual argument names.
+
+    Returns
+    -------
+    set[str]
+        Declared parameter names.
     """
 
-    # Store all discovered argument names here.
+    # Store discovered argument names.
     argument_names = set()
 
-    # Read the Pydantic argument schema used by modern CrewAI tools.
+    # Modern CrewAI/Pydantic tool schema.
     args_schema = getattr(
         tool_object,
         "args_schema",
-        None
+        None,
     )
 
     if args_schema is not None:
 
-        # Modern Pydantic uses model_fields.
+        # Pydantic v2 field representation.
         model_fields = getattr(
             args_schema,
             "model_fields",
-            None
+            None,
         )
 
         if model_fields:
@@ -874,11 +1049,11 @@ def get_tool_argument_names(tool_object):
 
         else:
 
-            # Support older schema representations as well.
+            # Fallback for older Pydantic schema representation.
             old_fields = getattr(
                 args_schema,
                 "__fields__",
-                None
+                None,
             )
 
             if old_fields:
@@ -887,25 +1062,28 @@ def get_tool_argument_names(tool_object):
                     old_fields.keys()
                 )
 
-    # If no schema fields were found, inspect the underlying
-    # Python callable as a fallback.
+    # If schema fields are unavailable, inspect the underlying
+    # Python function.
     if not argument_names:
 
         function = getattr(
             tool_object,
             "func",
-            None
+            None,
         )
 
+        # Some framework versions expose _run instead.
         if function is None:
 
             function = getattr(
                 tool_object,
                 "_run",
-                None
+                None,
             )
 
-        if callable(function):
+        if callable(
+            function
+        ):
 
             try:
 
@@ -917,42 +1095,54 @@ def get_tool_argument_names(tool_object):
                     signature.parameters.keys()
                 )
 
-            except (TypeError, ValueError):
+            except (
+                TypeError,
+                ValueError,
+            ):
 
-                # Some framework callables do not expose a
-                # Python signature. In that case leave the set empty.
+                # Leave the set empty when the framework does not
+                # expose a usable Python signature.
                 pass
 
+    # Return declared arguments.
     return argument_names
 
 
 def find_tool_by_argument(
     from_agent,
-    argument_name
+    argument_name,
 ):
     """
-    Find the assigned tool that accepts a specified argument.
+    Find the tool assigned to an agent that accepts a given argument.
 
-    Example:
-        query     -> RAG tool
-        record_id -> application lookup tool
+    Examples
+    --------
+    query:
+        identifies the RAG tool.
 
-    This supports safer tool dispatch than relying only on names.
+    record_id:
+        identifies the application lookup tool.
+
+    Returns
+    -------
+    tool or None
     """
 
-    # Read all tools assigned to the agent.
+    # Read the tools actually assigned to the agent.
     tools = get_agent_tools(
         from_agent
     )
 
-    # Inspect each tool's actual argument schema.
+    # Inspect each tool's declared parameters.
     for tool_object in tools:
 
-        argument_names = get_tool_argument_names(
-            tool_object
+        argument_names = (
+            get_tool_argument_names(
+                tool_object
+            )
         )
 
-        # Return the first tool accepting the requested argument.
+        # Match based on the actual declared argument.
         if argument_name in argument_names:
 
             return tool_object
@@ -960,17 +1150,18 @@ def find_tool_by_argument(
     return None
 
 
-def get_tool_name(tool_object):
+def get_tool_name(
+    tool_object,
+):
     """
-    Return the registered CrewAI name of a tool.
+    Return a CrewAI tool's public name.
     """
 
-    # CrewAI stores the public tool name in the name attribute.
     return str(
         getattr(
             tool_object,
             "name",
-            ""
+            "",
         )
     )
 
@@ -979,61 +1170,70 @@ def get_tool_name(tool_object):
 # INPUT HELPERS
 # ============================================================
 
-def extract_record_id(text: str):
+def extract_record_id(
+    text: str,
+):
     """
-    Extract an application ID such as APP001 from arbitrary text.
+    Extract an application ID formatted as APP followed by 3 digits.
 
-    The regular expression intentionally requires:
-        APP + exactly three digits
+    Examples
+    --------
+    APP001 -> APP001
+    app123 -> APP123
     """
 
-    # Convert the input to uppercase so APP001 and app001 both work.
+    # Normalize to uppercase.
     upper_text = text.upper()
 
-    # Search for an application ID using word boundaries.
+    # Search for the required APP### structure.
     match = re.search(
         r"\bAPP\d{3}\b",
-        upper_text
+        upper_text,
     )
 
-    # Return the normalized application ID when found.
+    # Return normalized ID if found.
     if match:
 
-        return match.group(0)
+        return match.group(
+            0
+        )
 
     return None
 
 
-def extract_clean_rag_query(text: str) -> str:
+def extract_clean_rag_query(
+    text: str,
+) -> str:
     """
-    Remove surrounding CrewAI task wording from a RAG query.
+    Extract only the actual question from CrewAI task wording.
 
-    This keeps the retrieval query focused on the actual question.
+    The helper removes known task scaffolding so the embedding
+    model sees the user's semantic question rather than framework
+    instructions.
     """
 
-    # The evaluator/agent task can contain a "question:" marker.
+    # Find a common "question:" marker.
     marker = "question:"
 
-    # Use a lowercase copy only for locating the marker.
     lower_text = text.lower()
 
-    # Find the beginning of the question.
     marker_position = lower_text.find(
         marker
     )
 
+    # If the marker exists, extract everything after it.
     if marker_position != -1:
 
-        # Extract everything after the marker.
         question = text[
-            marker_position + len(marker):
+            marker_position
+            + len(marker):
         ].strip()
 
-        # Remove known task-instruction suffixes when present.
+        # Remove known framework/task suffixes.
         ending_markers = [
             "This is the expected criteria",
             "Begin!",
-            "Expected Output:"
+            "Expected Output:",
         ]
 
         for ending_marker in ending_markers:
@@ -1050,72 +1250,88 @@ def extract_clean_rag_query(text: str) -> str:
 
         return question
 
-    # When no marker is present, use the original text.
+    # Otherwise use the complete supplied text.
     return text.strip()
 
 
-def get_latest_user_message(messages):
+def get_latest_user_message(
+    messages,
+) -> str:
     """
-    Return the most recent user-authored message.
+    Return the newest user-authored message.
+
+    Returns
+    -------
+    str
+        Latest user message or empty string.
     """
 
-    # Search messages from newest to oldest.
-    for message in reversed(messages):
+    # Search newest to oldest.
+    for message in reversed(
+        messages
+    ):
 
-        # Only user messages are relevant here.
-        if get_message_role(message) == "user":
+        # Only user-authored content matters.
+        if get_message_role(
+            message
+        ) == "user":
 
             return get_message_content(
                 message
             )
 
-    # Return an empty string if no user message exists.
     return ""
 
 
 # ============================================================
-# PREVIOUS ACTION CHECK
+# PREVIOUS ACTION DETECTION
 # ============================================================
 
 def has_previous_action(
     messages,
-    tool_name
+    tool_name,
 ):
     """
     Determine whether the current agent already requested a tool.
 
-    IMPORTANT:
-        The implementation deliberately does NOT search for a
-        generic "Observation:" string because CrewAI's system
-        prompt itself can contain that word.
+    IMPORTANT
+    ---------
+    We deliberately do NOT search generic "Observation:" text.
 
-    Instead, only assistant-authored Action lines are checked.
+    CrewAI's own system prompt can contain:
+        Observation: the result of the action
+
+    Searching the entire conversation for "Observation:" would
+    therefore produce a false positive before any tool executes.
+
+    Instead, this function checks only assistant-generated Action
+    lines for the exact requested tool.
     """
 
-    # Examine every available message.
+    # Examine every message.
     for message in messages:
 
-        # Only assistant-authored messages can represent the
-        # current agent's requested action.
-        if get_message_role(message) != "assistant":
+        # Only assistant messages can contain requested actions.
+        if get_message_role(
+            message
+        ) != "assistant":
 
             continue
 
-        # Read the assistant message text.
+        # Read assistant text.
         content = get_message_content(
             message
         )
 
-        # Match the exact Action line generated by our MOCK_LLM.
+        # Match an exact generated Action line.
         action_pattern = (
             rf"(?m)^\s*Action:\s*"
             rf"{re.escape(tool_name)}\s*$"
         )
 
-        # Return True when the requested tool action already exists.
         if re.search(
             action_pattern,
-            content
+            content,
         ):
 
             return True
@@ -1129,97 +1345,105 @@ def has_previous_action(
 
 def extract_composer_question(
     from_task,
-    fallback_message: str
+    fallback_message: str,
 ) -> str:
     """
-    Extract the current user question from the Composer task.
+    Extract the user question from the Composer task description.
 
-    The Composer task is treated as the authoritative source for
-    the current user question.
+    The Composer task's explicit User question field is treated
+    as authoritative.
     """
 
-    # Read the current task description safely.
+    # Safely read the task description.
     task_description = str(
         getattr(
             from_task,
             "description",
-            ""
+            "",
         )
     )
 
-    # Find the User question section.
+    # Extract everything between User question and the next
+    # Application record marker.
     question_match = re.search(
         r"User question:\s*(.*?)"
         r"(?:\n\s*Application record:|\Z)",
         task_description,
-        flags=re.DOTALL
+        flags=re.DOTALL,
     )
 
-    # Return the extracted question when one exists.
     if question_match:
 
-        question = question_match.group(1).strip()
+        question = (
+            question_match
+            .group(1)
+            .strip()
+        )
 
         if question:
 
             return question
 
-    # Fall back to the latest user message.
+    # Use the latest user message as fallback.
     return fallback_message.strip()
 
 
 def extract_composer_record_id(
-    from_task
+    from_task,
 ) -> Optional[str]:
     """
-    Extract the application ID explicitly supplied to the Composer.
+    Extract an explicit APP### value from the Composer task.
 
-    This also supports an application ID recovered by Task 8
-    session memory.
+    This includes IDs recovered by Task 8 memory before task creation.
     """
 
-    # Read the Composer task description.
+    # Read task description.
     task_description = str(
         getattr(
             from_task,
             "description",
-            ""
+            "",
         )
     )
 
-    # Find an APP### value in the Application record field.
+    # Search specifically within the Application record field.
     record_match = re.search(
         r"Application record:\s*(APP\d{3})",
         task_description,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
-    # Return the normalized ID when found.
     if record_match:
 
-        return record_match.group(1).upper()
+        return (
+            record_match
+            .group(1)
+            .upper()
+        )
 
     return None
 
 
 def extract_lookup_json(
-    context_text: str
+    context_text: str,
 ):
     """
-    Extract a flat Task 6 lookup JSON object from Composer context.
+    Extract a structured Task 6 lookup JSON object from Composer context.
 
-    The lookup schema contains record_id, which allows this helper
-    to distinguish structured application evidence from other text.
+    Returns
+    -------
+    dict or None
+        Parsed lookup result when a valid APP### record is found.
     """
 
-    # Locate simple JSON objects containing an APP### record ID.
+    # Search simple JSON objects containing record_id.
     candidates = re.findall(
         r'\{[^{}]*"record_id"\s*:\s*"APP\d{3}"[^{}]*\}',
         context_text,
-        flags=re.DOTALL
+        flags=re.DOTALL,
     )
 
-    # Try to parse every possible candidate.
+    # Try each candidate independently.
     for candidate in candidates:
 
         try:
@@ -1228,15 +1452,17 @@ def extract_lookup_json(
                 candidate
             )
 
-            # Ensure the result is a dictionary containing a
-            # recognizable application ID.
+            # Confirm that it is a dictionary with a valid APP ID.
             if (
-                isinstance(data, dict)
+                isinstance(
+                    data,
+                    dict,
+                )
                 and extract_record_id(
                     str(
                         data.get(
                             "record_id",
-                            ""
+                            "",
                         )
                     )
                 )
@@ -1246,33 +1472,36 @@ def extract_lookup_json(
 
         except json.JSONDecodeError:
 
-            # Ignore malformed candidate fragments and continue.
+            # Ignore malformed fragments.
             continue
 
     return None
 
 
 def extract_first_retrieved_text(
-    context_text: str
+    context_text: str,
 ) -> Optional[str]:
     """
     Extract the first useful RAG Text field from previous-agent context.
 
-    The Composer uses this to return the knowledge content while
-    avoiding exposure of raw similarity metadata.
+    Internal similarity metadata is deliberately not returned to the
+    end user by this helper.
     """
 
-    # Find the first Text: field and stop at the next source block.
+    # Find the first Text field and stop at the next source block.
     match = re.search(
         r"Text:\s*(.*?)(?=\n\nSource:|\Z)",
         context_text,
-        flags=re.DOTALL
+        flags=re.DOTALL,
     )
 
-    # Return the cleaned text when found.
     if match:
 
-        text = match.group(1).strip()
+        text = (
+            match
+            .group(1)
+            .strip()
+        )
 
         if text:
 
@@ -1287,15 +1516,25 @@ def extract_first_retrieved_text(
 
 class MOCK_LLM(BaseLLM):
     """
-    Deterministic local CrewAI model used for reproducible demos.
+    Deterministic local CrewAI model used for the capstone.
 
-    No external commercial LLM API is called.
+    It emulates the required agent behavior without contacting
+    an external language-model provider.
 
-    The model emulates the small set of CrewAI actions needed by
-    this capstone:
-        1. Retrieval Agent -> RAG tool call
-        2. Lookup Agent    -> application lookup tool call
-        3. Response Agent  -> deterministic final answer
+    Supported flow
+    --------------
+    Retrieval Agent:
+        returns a RAG tool Action.
+
+    Lookup Agent:
+        returns an application-lookup Action.
+
+    Response Composer:
+        produces a deterministic final answer.
+
+    This implementation also avoids the known CrewAI ReAct
+    parsing pitfall by checking only assistant-generated Action
+    messages instead of searching generic Observation text.
     """
 
     def call(
@@ -1307,57 +1546,92 @@ class MOCK_LLM(BaseLLM):
         from_task=None,
         from_agent=None,
         response_model=None,
-        **kwargs
+        **kwargs,
     ):
         """
         Decide whether the current agent should call a tool or
-        produce its final deterministic answer.
+        produce a deterministic final answer.
+
+        Parameters
+        ----------
+        messages :
+            Current CrewAI conversation/messages.
+
+        tools :
+            Available tools; retained for API compatibility.
+
+        callbacks :
+            Optional CrewAI callback collection.
+
+        available_functions :
+            Optional framework-provided function mapping.
+
+        from_task :
+            Task currently being executed.
+
+        from_agent :
+            Agent currently executing.
+
+        response_model :
+            Optional framework response model.
+
+        **kwargs :
+            Additional framework arguments.
+
+        Returns
+        -------
+        str
+            Deterministic ReAct-style output.
         """
 
-        # Normalize a possible None value into a list.
+        # Normalize a None message collection.
         if messages is None:
 
             messages = []
 
-        # Make a local list copy so inspection does not mutate
-        # CrewAI's original message collection.
-        messages = list(messages)
-
-        # Retrieve the most recent user message.
-        latest_user_message = get_latest_user_message(
+        # Copy the sequence so it can be safely inspected.
+        messages = list(
             messages
+        )
+
+        # Identify the latest user-authored message.
+        latest_user_message = (
+            get_latest_user_message(
+                messages
+            )
         )
 
         # ====================================================
         # CASE 1 - RETRIEVAL AGENT
         # ====================================================
 
-        # Look for an assigned tool whose schema accepts "query".
+        # Identify a tool that actually accepts "query".
         query_tool = find_tool_by_argument(
             from_agent,
-            "query"
+            "query",
         )
 
         if query_tool is not None:
 
-            # Read the actual CrewAI tool name.
+            # Read the actual CrewAI public tool name.
             query_tool_name = get_tool_name(
                 query_tool
             )
 
-            # Request the RAG tool only once.
+            # Issue the RAG action only once.
             if not has_previous_action(
                 messages,
-                query_tool_name
+                query_tool_name,
             ):
 
-                # Remove surrounding task wording from the query.
-                clean_query = extract_clean_rag_query(
-                    latest_user_message
+                # Remove framework/task wording.
+                clean_query = (
+                    extract_clean_rag_query(
+                        latest_user_message
+                    )
                 )
 
-                # Return the deterministic ReAct action expected
-                # by the configured CrewAI version.
+                # Return the deterministic Action block.
                 return (
                     "Thought: I need to search the "
                     "HR knowledge base.\n"
@@ -1366,13 +1640,13 @@ class MOCK_LLM(BaseLLM):
                     f"{json.dumps({'query': clean_query})}"
                 )
 
-            # Read the latest RAG output after the tool executes.
+            # Tool has already executed, so read its stored result.
             rag_result = LAST_TOOL_RESULT.get(
                 query_tool_name,
-                "No RAG result was stored."
+                "No RAG result was stored.",
             )
 
-            # Finish the Retrieval Agent task with that result.
+            # Return the tool result as the Retrieval Agent's final answer.
             return (
                 "Thought: I have retrieved the relevant "
                 "knowledge-base information.\n"
@@ -1383,32 +1657,31 @@ class MOCK_LLM(BaseLLM):
         # CASE 2 - LOOKUP AGENT
         # ====================================================
 
-        # Look for an assigned tool accepting "record_id".
+        # Identify a tool that accepts record_id.
         record_tool = find_tool_by_argument(
             from_agent,
-            "record_id"
+            "record_id",
         )
 
         if record_tool is not None:
 
-            # Read the actual CrewAI tool name.
+            # Read the actual tool name.
             record_tool_name = get_tool_name(
                 record_tool
             )
 
-            # Request lookup only once.
+            # Issue lookup only once.
             if not has_previous_action(
                 messages,
-                record_tool_name
+                record_tool_name,
             ):
 
-                # Extract an application ID from the current task.
+                # Extract application ID.
                 record_id = extract_record_id(
                     latest_user_message
                 )
 
-                # When no record ID exists, return the required
-                # missing-ID message instead of inventing data.
+                # Explicitly request the ID when it is missing.
                 if record_id is None:
 
                     return (
@@ -1418,7 +1691,7 @@ class MOCK_LLM(BaseLLM):
                         "application ID such as APP123."
                     )
 
-                # Return the deterministic application lookup action.
+                # Return deterministic lookup Action.
                 return (
                     "Thought: I need to look up the "
                     "application record.\n"
@@ -1427,13 +1700,12 @@ class MOCK_LLM(BaseLLM):
                     f"{json.dumps({'record_id': record_id})}"
                 )
 
-            # Read the actual lookup result after tool execution.
+            # Read the stored tool result.
             lookup_result = LAST_TOOL_RESULT.get(
                 record_tool_name,
-                "No lookup result was stored."
+                "No lookup result was stored.",
             )
 
-            # Finish the Lookup Agent task.
             return (
                 "Thought: I have the application lookup "
                 "information.\n"
@@ -1444,24 +1716,29 @@ class MOCK_LLM(BaseLLM):
         # CASE 3 - RESPONSE COMPOSER
         # ====================================================
 
-        # Extract the actual current question from the Composer task.
-        current_question = extract_composer_question(
-            from_task,
-            latest_user_message
+        # Extract the current user question.
+        current_question = (
+            extract_composer_question(
+                from_task,
+                latest_user_message,
+            )
         )
 
-        # Convert the question to lowercase for deterministic
-        # intent matching.
-        question_lower = current_question.lower()
+        # Lowercase once for deterministic intent matching.
+        question_lower = (
+            current_question.lower()
+        )
 
-        # The Composer task is the authoritative location for the
-        # application ID, including one recovered by Task 8 memory.
-        selected_record_id = extract_composer_record_id(
-            from_task
+        # The Composer task explicitly carries the selected
+        # record ID, including memory-recovered IDs.
+        selected_record_id = (
+            extract_composer_record_id(
+                from_task
+            )
         )
 
         # ----------------------------------------------------
-        # LOCATE PREVIOUS-AGENT CONTEXT
+        # FIND PREVIOUS-AGENT CONTEXT
         # ----------------------------------------------------
 
         # Search user messages for CrewAI's injected context block.
@@ -1469,7 +1746,9 @@ class MOCK_LLM(BaseLLM):
 
         for message in messages:
 
-            if get_message_role(message) != "user":
+            if get_message_role(
+                message
+            ) != "user":
 
                 continue
 
@@ -1484,16 +1763,12 @@ class MOCK_LLM(BaseLLM):
 
                 context_text = content
 
-        # ----------------------------------------------------
-        # REMOVE CREWAI CONTEXT MARKER
-        # ----------------------------------------------------
-
+        # Remove the framework context marker.
         if context_text:
 
-            # Keep only the useful context after the marker.
             parts = context_text.split(
                 "This is the context you're working with:",
-                1
+                1,
             )
 
             combined_context = (
@@ -1507,25 +1782,22 @@ class MOCK_LLM(BaseLLM):
             combined_context = ""
 
         # ====================================================
-        # LOOKUP RESULT
+        # LOOKUP CONTEXT
         # ====================================================
 
-        # Search for structured Task 6 application data.
+        # Search Composer context for structured application output.
         lookup_data = extract_lookup_json(
             combined_context
         )
 
-        # Only use lookup data when the current Composer task
-        # contains a genuine application ID.
-        #
-        # This prevents a missing-ID Lookup Agent result from
-        # overriding a valid RAG response.
+        # Only use structured lookup data when an explicit/current
+        # application record exists.
         if (
             lookup_data is not None
             and selected_record_id is not None
         ):
 
-            # Read the individual fields returned by Task 6.
+            # Read structured lookup fields.
             record_id = lookup_data.get(
                 "record_id"
             )
@@ -1550,9 +1822,9 @@ class MOCK_LLM(BaseLLM):
                 "expected_salary_inr"
             )
 
-            # --------------------------------------------
-            # STATUS QUESTION
-            # --------------------------------------------
+            # ------------------------------------------------
+            # STATUS
+            # ------------------------------------------------
 
             if "status" in question_lower:
 
@@ -1565,9 +1837,9 @@ class MOCK_LLM(BaseLLM):
                     f"{status}."
                 )
 
-            # --------------------------------------------
-            # ESCALATION SCORE QUESTION
-            # --------------------------------------------
+            # ------------------------------------------------
+            # ESCALATION SCORE
+            # ------------------------------------------------
 
             if (
                 "escalation" in question_lower
@@ -1584,9 +1856,9 @@ class MOCK_LLM(BaseLLM):
                     f"{float(escalation_score):.4f}."
                 )
 
-            # --------------------------------------------
-            # ESCALATION RECOMMENDATION QUESTION
-            # --------------------------------------------
+            # ------------------------------------------------
+            # ESCALATION RECOMMENDATION
+            # ------------------------------------------------
 
             if (
                 "escalation" in question_lower
@@ -1598,10 +1870,11 @@ class MOCK_LLM(BaseLLM):
                 and escalation_recommended is not None
             ):
 
-                # Convert the Task 6 boolean into a readable answer.
                 recommendation_text = (
                     "recommended for higher-priority escalation"
-                    if bool(escalation_recommended)
+                    if bool(
+                        escalation_recommended
+                    )
                     else "not recommended for higher-priority escalation"
                 )
 
@@ -1614,9 +1887,9 @@ class MOCK_LLM(BaseLLM):
                     f"{recommendation_text}."
                 )
 
-            # --------------------------------------------
-            # CANDIDATE NAME QUESTION
-            # --------------------------------------------
+            # ------------------------------------------------
+            # CANDIDATE NAME
+            # ------------------------------------------------
 
             if (
                 "candidate" in question_lower
@@ -1635,9 +1908,9 @@ class MOCK_LLM(BaseLLM):
                     f"{record_id} is {candidate_name}."
                 )
 
-            # --------------------------------------------
-            # SALARY QUESTION
-            # --------------------------------------------
+            # ------------------------------------------------
+            # EXPECTED SALARY
+            # ------------------------------------------------
 
             if "salary" in question_lower:
 
@@ -1651,9 +1924,9 @@ class MOCK_LLM(BaseLLM):
                     f"{expected_salary}."
                 )
 
-            # --------------------------------------------
-            # GENERIC APPLICATION QUESTION
-            # --------------------------------------------
+            # ------------------------------------------------
+            # GENERIC APPLICATION RESPONSE
+            # ------------------------------------------------
 
             return (
                 "Thought: I have the application "
@@ -1666,16 +1939,15 @@ class MOCK_LLM(BaseLLM):
             )
 
         # ====================================================
-        # APPLICATION LOOKUP WITHOUT RECORD ID
+        # APPLICATION QUESTION WITHOUT A RECORD ID
         # ====================================================
 
-        # A generic word such as "candidate" must NOT automatically
-        # trigger application lookup.
+        # Only classify the question as application-related when
+        # the wording genuinely suggests application-specific data.
         #
-        # Example:
-        #   "How much notice should a candidate get before an interview?"
-        #
-        # is a normal HR policy question.
+        # This avoids treating normal phrases such as:
+        # "candidate before an interview"
+        # as application lookups.
         application_question = (
             selected_record_id is not None
             or (
@@ -1701,14 +1973,15 @@ class MOCK_LLM(BaseLLM):
             )
         )
 
-        # If an application-style question has no selected record
-        # and the Lookup Agent explicitly reported missing ID,
-        # return the required request for an application ID.
+        # If the Lookup Agent reported a missing application ID,
+        # propagate that safe response.
         if (
             application_question
             and selected_record_id is None
-            and "Please provide an application ID"
-            in combined_context
+            and (
+                "Please provide an application ID"
+                in combined_context
+            )
         ):
 
             return (
@@ -1719,31 +1992,30 @@ class MOCK_LLM(BaseLLM):
             )
 
         # ====================================================
-        # GENERAL RAG ANSWER
+        # GENERAL RAG RESPONSE
         # ====================================================
 
-        # The latest RAG tool result is authoritative for normal
-        # knowledge-base questions.
+        # Read the latest RAG tool result.
         rag_result = LAST_TOOL_RESULT.get(
             "rag_search",
-            ""
+            "",
         )
 
-        # Normalize it into a clean string.
+        # Normalize it to a string.
         rag_result = str(
             rag_result
         ).strip()
 
-        # Continue when a RAG tool result exists.
+        # Continue when the RAG path produced a result.
         if rag_result:
 
-            # -----------------------------------------------
-            # RAG FALLBACK
-            # -----------------------------------------------
-
+            # Explicit fallback.
             if (
                 rag_result
-                == "I don't know based on the available knowledge base."
+                == (
+                    "I don't know based on the available "
+                    "knowledge base."
+                )
             ):
 
                 return (
@@ -1755,14 +2027,11 @@ class MOCK_LLM(BaseLLM):
                     "knowledge base."
                 )
 
-            # -----------------------------------------------
-            # RETURN FIRST RETRIEVED TEXT
-            # -----------------------------------------------
-
-            # Extract only the useful retrieved text so the
-            # Composer does not expose internal similarity scores.
-            retrieved_text = extract_first_retrieved_text(
-                combined_context
+            # Try to extract only the useful first source text.
+            retrieved_text = (
+                extract_first_retrieved_text(
+                    combined_context
+                )
             )
 
             if retrieved_text:
@@ -1775,7 +2044,7 @@ class MOCK_LLM(BaseLLM):
                     f"{retrieved_text}"
                 )
 
-            # As a safe fallback, return the actual stored RAG result.
+            # Safe fallback to stored RAG text.
             return (
                 "Thought: I have retrieved relevant "
                 "knowledge-base information.\n"
@@ -1784,11 +2053,9 @@ class MOCK_LLM(BaseLLM):
             )
 
         # ====================================================
-        # FINAL FALLBACK
+        # FINAL FAIL-CLOSED RESPONSE
         # ====================================================
 
-        # If neither lookup nor RAG supplied usable information,
-        # fail closed with the knowledge-base fallback.
         return (
             "Thought: No usable information was returned "
             "by the previous agents.\n"
@@ -1797,44 +2064,57 @@ class MOCK_LLM(BaseLLM):
             "knowledge base."
         )
 
-    def supports_function_calling(self) -> bool:
+    def supports_function_calling(
+        self,
+    ) -> bool:
         """
-        Report that this MOCK_LLM uses text-based ReAct-style
-        tool requests rather than native function calling.
+        Report that the custom model does not use native function
+        calling.
+
+        Instead it emits text-based ReAct-style Action blocks.
         """
 
-        # The custom model intentionally returns textual
-        # Thought/Action/Action Input instructions.
         return False
 
 
 # ============================================================
-# CREATE MOCK LLM
+# CREATE ONE SHARED MOCK LLM
 # ============================================================
 
-# Create one shared deterministic mock model instance.
+# One deterministic model instance is shared by the CrewAI agents.
 mock_llm = MOCK_LLM(
     model="mock-llm"
 )
 
 
 # ============================================================
-# TASK 7 - CREATE AGENTS
+# TASK 7 - CREATE THREE REQUIRED AGENTS
 # ============================================================
 
 def create_agents():
     """
-    Create the three required Task 7 CrewAI agents.
+    Create the three mandatory CrewAI agents.
 
-    Tool ownership is intentionally restricted:
-        Retrieval Agent -> rag_search only
-        Lookup Agent    -> application lookup only
-        Composer Agent  -> no tools
+    Tool ownership
+    --------------
+    Retrieval Agent:
+        rag_search only.
+
+    Lookup Agent:
+        check_job_application_status only.
+
+    Response Composer:
+        no tools.
+
+    Returns
+    -------
+    tuple
+        Retrieval Agent, Lookup Agent, Response Composer.
     """
 
-    # --------------------------------------------------------
+    # ========================================================
     # RETRIEVAL AGENT
-    # --------------------------------------------------------
+    # ========================================================
 
     retrieval_agent = Agent(
         role="HR Knowledge Retrieval Agent",
@@ -1850,22 +2130,24 @@ def create_agents():
             "instead of inventing facts."
         ),
 
-        # Only the RAG tool is available to this agent.
-        tools=[rag_search],
+        # Only RAG is allowed.
+        tools=[
+            rag_search
+        ],
 
-        # Use the deterministic local model.
+        # Deterministic local model.
         llm=mock_llm,
 
-        # Prevent delegation to another agent.
+        # No delegation to another agent.
         allow_delegation=False,
 
-        # Enable execution logging for demonstrations.
-        verbose=True
+        # Verbose logs provide execution evidence.
+        verbose=True,
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # LOOKUP AGENT
-    # --------------------------------------------------------
+    # ========================================================
 
     lookup_agent = Agent(
         role="Job Application Lookup Agent",
@@ -1877,63 +2159,59 @@ def create_agents():
 
         backstory=(
             "You retrieve factual application information "
-            "using the provided Task 6 lookup tool and "
-            "never invent application data."
+            "using the provided lookup tool and never invent "
+            "application data."
         ),
 
-        # This agent receives only the privileged application
-        # lookup tool required by Task 6.
-        tools=[lookup_job_application_status],
+        # Only the privileged lookup tool is available.
+        tools=[
+            lookup_job_application_status
+        ],
 
-        # Use the same deterministic mock model.
         llm=mock_llm,
 
-        # Prevent delegation.
         allow_delegation=False,
 
-        # Enable verbose execution evidence.
-        verbose=True
+        verbose=True,
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # RESPONSE COMPOSER
-    # --------------------------------------------------------
+    # ========================================================
 
     composer_agent = Agent(
         role="HR Response Composer",
 
         goal=(
-            "Combine the outputs from the Retrieval Agent "
-            "and Lookup Agent into one clear final factual answer."
+            "Combine outputs from the Retrieval Agent and "
+            "Lookup Agent into one clear factual answer."
         ),
 
         backstory=(
             "You are the final response writer. Use only the "
             "information returned by the previous agents. "
             "Answer the user's current question directly. "
-            "Do not expose internal tool instructions, raw "
-            "similarity metadata, raw JSON, or CrewAI control text. "
-            "Do not invent information."
+            "Do not expose raw tool instructions, similarity "
+            "metadata, raw JSON, or CrewAI control text. "
+            "Do not invent unsupported information."
         ),
 
-        # The Composer intentionally has no tools.
+        # Critical least-autonomy property:
+        # the Composer receives NO tools.
         tools=[],
 
-        # Use the deterministic mock model.
         llm=mock_llm,
 
-        # Prevent delegation.
         allow_delegation=False,
 
-        # Enable verbose execution evidence.
-        verbose=True
+        verbose=True,
     )
 
-    # Return all three agents in the required order.
+    # Return all agents.
     return (
         retrieval_agent,
         lookup_agent,
-        composer_agent
+        composer_agent,
     )
 
 
@@ -1944,20 +2222,25 @@ def create_agents():
 def create_tasks(
     retrieval_agent,
     lookup_agent,
-    composer_agent
+    composer_agent,
 ):
     """
     Create the three sequential CrewAI tasks.
 
     Task order:
         1. Retrieval
-        2. Application Lookup
-        3. Response Composition
+        2. Lookup
+        3. Composition
+
+    Returns
+    -------
+    tuple
+        Retrieval Task, Lookup Task, Composer Task.
     """
 
-    # --------------------------------------------------------
+    # ========================================================
     # RETRIEVAL TASK
-    # --------------------------------------------------------
+    # ========================================================
 
     retrieval_task = Task(
         description=(
@@ -1973,13 +2256,12 @@ def create_tasks(
             "knowledge base."
         ),
 
-        # Assign this task only to the Retrieval Agent.
-        agent=retrieval_agent
+        agent=retrieval_agent,
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # LOOKUP TASK
-    # --------------------------------------------------------
+    # ========================================================
 
     lookup_task = Task(
         description=(
@@ -1997,13 +2279,12 @@ def create_tasks(
             "when none is available."
         ),
 
-        # Assign this task only to the Lookup Agent.
-        agent=lookup_agent
+        agent=lookup_agent,
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # COMPOSER TASK
-    # --------------------------------------------------------
+    # ========================================================
 
     composer_task = Task(
         description=(
@@ -2013,34 +2294,33 @@ def create_tasks(
             "{user_question}\n\n"
             "Application record:\n"
             "{record_id}\n\n"
-            "Combine the relevant information from both previous "
-            "agents into one clear answer. Answer the CURRENT "
-            "user question only. Do not output raw CrewAI "
-            "instructions, similarity metadata, raw JSON, or "
-            "internal formatting."
+            "Combine relevant information from previous agents "
+            "into one clear answer. Answer the CURRENT user "
+            "question only. Do not output raw CrewAI instructions, "
+            "similarity metadata, raw JSON, or internal formatting."
         ),
 
         expected_output=(
-            "One clear final answer directly answering the "
-            "current user's question using only information "
-            "returned by the previous agents."
+            "One clear final answer directly answering the current "
+            "user's question using only information returned by "
+            "the previous agents."
         ),
 
-        # Assign composition to the Composer Agent.
         agent=composer_agent,
 
-        # Give the Composer access to both previous task outputs.
+        # Give the Composer access to prior-agent outputs,
+        # but NOT their tools.
         context=[
             retrieval_task,
-            lookup_task
-        ]
+            lookup_task,
+        ],
     )
 
     # Return tasks in execution order.
     return (
         retrieval_task,
         lookup_task,
-        composer_task
+        composer_task,
     )
 
 
@@ -2051,145 +2331,163 @@ def create_tasks(
 def create_main_crew():
     """
     Create the required three-agent sequential CrewAI workflow.
+
+    Returns
+    -------
+    crewai.Crew
+        Configured CrewAI workflow.
     """
 
-    # Create the three agents.
+    # Create all three agents.
     (
         retrieval_agent,
         lookup_agent,
-        composer_agent
+        composer_agent,
     ) = create_agents()
 
-    # Create the three tasks assigned to those agents.
+    # Create all three tasks.
     (
         retrieval_task,
         lookup_task,
-        composer_task
+        composer_task,
     ) = create_tasks(
         retrieval_agent,
         lookup_agent,
-        composer_agent
+        composer_agent,
     )
 
-    # Construct the CrewAI workflow.
+    # Assemble them into a sequential Crew.
     new_crew = Crew(
         agents=[
             retrieval_agent,
             lookup_agent,
-            composer_agent
+            composer_agent,
         ],
 
         tasks=[
             retrieval_task,
             lookup_task,
-            composer_task
+            composer_task,
         ],
 
-        # Task execution must happen in strict sequence.
         process=Process.sequential,
 
-        # Enable verbose execution for demonstrations.
-        verbose=True
+        verbose=True,
     )
 
     return new_crew
 
 
 # ============================================================
-# MODULE-LEVEL CREW
+# SHARED CREW
 # ============================================================
 
-# Create the shared Crew used by the API and demonstrations.
+# Build the shared Crew used by API calls and demonstrations.
 crew = create_main_crew()
 
 
 # ============================================================
-# TASK 8 - SESSION MEMORY
+# TASK 8 - SESSION MEMORY STORAGE
 # ============================================================
 
-# Store one LangChain message history object per session ID.
+# Store LangChain history objects by session ID.
 SESSION_STORE = {}
 
-# Store the currently selected application ID independently for
-# each API/session context.
+# Store the latest selected application ID by session.
 SESSION_SELECTED_RECORD_IDS = {}
 
-# Store the most recently selected application ID for demonstration
-# assertions such as Task 8.
+# Used by demonstrations to assert which record was selected.
 LAST_SELECTED_RECORD_ID = None
 
-# Bridge the current API/request execution to the corresponding
-# memory session ID without relying on one global session value.
+# ContextVar links the current execution with its logical
+# session without relying on one unsafe global session ID.
 CURRENT_MEMORY_SESSION_ID = ContextVar(
     "current_memory_session_id",
-    default=None
+    default=None,
 )
 
 
 # ============================================================
-# TASK 8 - SESSION HISTORY
+# TASK 8 - GET/CREATE SESSION HISTORY
 # ============================================================
 
 def get_session_history(
-    session_id: str
+    session_id: str,
 ) -> InMemoryChatMessageHistory:
     """
-    Return the existing history for a session or create it.
+    Return or create a LangChain history object for a session.
 
-    Parameters:
-        session_id:
-            Logical conversation/session identifier.
+    Parameters
+    ----------
+    session_id : str
+        Conversation/session identifier.
 
-    Returns:
-        InMemoryChatMessageHistory for that session.
+    Returns
+    -------
+    InMemoryChatMessageHistory
+        Session-specific history.
     """
 
-    # Create the history object the first time a session is seen.
+    # Create a new history object for first-time sessions.
     if session_id not in SESSION_STORE:
 
-        SESSION_STORE[session_id] = (
-            InMemoryChatMessageHistory()
-        )
+        SESSION_STORE[
+            session_id
+        ] = InMemoryChatMessageHistory()
 
-    # Return the session-specific history.
-    return SESSION_STORE[session_id]
+    # Return existing or newly-created history.
+    return SESSION_STORE[
+        session_id
+    ]
 
 
-def get_history_text(history) -> str:
+def get_history_text(
+    history,
+) -> str:
     """
-    Convert stored LangChain history messages into readable text.
+    Convert session history messages to readable text.
+
+    Parameters
+    ----------
+    history :
+        LangChain history object or iterable of messages.
+
+    Returns
+    -------
+    str
+        Formatted history.
     """
 
-    # Prepare a list for formatted history lines.
+    # Store formatted lines.
     history_lines = []
 
-    # Read the message list from the history object.
+    # Read messages from either an object or iterable.
     messages = getattr(
         history,
         "messages",
-        history
+        history,
     )
 
-    # Convert each stored message into role/content text.
+    # Format each message.
     for message in messages:
 
         role = getattr(
             message,
             "type",
-            "message"
+            "message",
         )
 
         content = getattr(
             message,
             "content",
-            ""
+            "",
         )
 
         history_lines.append(
             f"{role}: {content}"
         )
 
-    # Return the complete session history as one string.
+    # Join messages into one string.
     return "\n\n".join(
         history_lines
     )
@@ -2199,58 +2497,59 @@ def get_history_text(history) -> str:
 # TASK 8 - MEMORY-AWARE CREW EXECUTION
 # ============================================================
 
-def run_memory_aware_crew(data):
+def run_memory_aware_crew(
+    data,
+):
     """
-    Execute the existing Task 7 Crew through Task 8 session memory.
+    Execute the Crew using Task 8 session memory.
 
-    Selection priority:
-        1. APP### present in the current message
-        2. APP### found in the same-session history
+    Record-ID selection priority:
+        1. Current message APP###
+        2. Same-session previous history APP###
         3. None
 
-    Only application-ID selection uses conversation history.
-    The actual RAG query remains based on the current message only.
+    Only application-ID resolution uses history.
+    The current RAG query remains the current user message.
     """
 
-    # Read the current user message.
+    # Read current user query.
     current_message = str(
         data.get(
             "query",
-            ""
+            "",
         )
     )
 
-    # Read the history supplied by RunnableWithMessageHistory.
+    # Read history supplied by RunnableWithMessageHistory.
     history = data.get(
         "history",
-        []
+        [],
     )
 
-    # Convert stored history into text for application-ID extraction.
+    # Convert history to text for APP### extraction.
     history_text = get_history_text(
         history
     )
 
-    # First try to extract an application ID from the current turn.
+    # Prefer a record ID explicitly present in the current message.
     record_id = extract_record_id(
         current_message
     )
 
-    # If the current turn contains no ID, search this same session's
-    # previous messages.
+    # Otherwise recover it from same-session history.
     if record_id is None:
 
         record_id = extract_record_id(
             history_text
         )
 
-    # Use an empty string in the CrewAI task when no application ID
-    # is available so Task 6 can explicitly report that one is needed.
+    # Empty string allows the Lookup Agent to say that the ID
+    # is required instead of inventing application data.
     if record_id is None:
 
         record_id = ""
 
-    # Update the demonstration state.
+    # Store demonstration state.
     global LAST_SELECTED_RECORD_ID
 
     LAST_SELECTED_RECORD_ID = (
@@ -2259,12 +2558,12 @@ def run_memory_aware_crew(data):
         else None
     )
 
-    # Read the current request's memory-session ID.
+    # Read current session ID.
     current_session_id = (
         CURRENT_MEMORY_SESSION_ID.get()
     )
 
-    # Save the selected record ID under the current session.
+    # Persist selected application ID within this session.
     if current_session_id is not None:
 
         SESSION_SELECTED_RECORD_IDS[
@@ -2275,8 +2574,11 @@ def run_memory_aware_crew(data):
             else None
         )
 
-    # Print visible Task 8 evidence.
-    print("\n[SESSION MEMORY]")
+    # Display memory evidence.
+    print(
+        "\n[SESSION MEMORY]"
+    )
+
     print(
         f"Current message: {current_message}"
     )
@@ -2286,16 +2588,16 @@ def run_memory_aware_crew(data):
         f"{record_id if record_id else 'None'}"
     )
 
-    # Execute the existing three-agent Crew.
+    # Run the same CrewAI workflow.
     result = crew.kickoff(
         inputs={
             "rag_query": current_message,
             "user_question": current_message,
-            "record_id": record_id
+            "record_id": record_id,
         }
     )
 
-    # Validate the final result through the Task 9 schema.
+    # Validate final structured response.
     validated_response = validate_crew_response(
         crew_result=result,
         query=current_message,
@@ -2303,62 +2605,74 @@ def run_memory_aware_crew(data):
             record_id
             if record_id
             else None
-        )
+        ),
     )
 
-    # Return only the final user-facing answer.
+    # Return user-facing answer if validation succeeds.
     if validated_response is not None:
 
-        return validated_response.final_answer
+        return (
+            validated_response.final_answer
+        )
 
-    # Fail safely if schema validation did not succeed.
-    return "Crew response could not be validated."
+    # Safe response on validation failure.
+    return (
+        "Crew response could not be validated."
+    )
 
 
 # ============================================================
 # LANGCHAIN MEMORY RUNNABLE
 # ============================================================
 
-# Wrap the memory-aware execution function as a LangChain runnable.
+# Convert the function into a LangChain runnable.
 memory_aware_crew_runnable = RunnableLambda(
     run_memory_aware_crew
 )
 
 
 # ============================================================
-# TASK 8 - RUNNABLE WITH MESSAGE HISTORY
+# TASK 8 - CONNECT MEMORY TO RUNNABLE
 # ============================================================
 
-# Connect the runnable with per-session message history.
+# Connect each session ID to its own message history.
 crew_with_memory = RunnableWithMessageHistory(
     memory_aware_crew_runnable,
     get_session_history,
     input_messages_key="query",
-    history_messages_key="history"
+    history_messages_key="history",
 )
 
 
 # ============================================================
-# TASK 7 - RAG DEMONSTRATION
+# TASK 7 - RAG TOOL DEMONSTRATION
 # ============================================================
 
 def demonstrate_rag_tool():
     """
-    Demonstrate actual RAG tool invocation through CrewAI kickoff().
+    Demonstrate RAG tool invocation through actual CrewAI kickoff().
     """
 
-    # Print a clear demonstration heading.
-    print("\n")
-    print("=" * 60)
-    print("DEMONSTRATION 1 - RAG TOOL")
-    print("=" * 60)
+    # Print a clear heading.
+    print(
+        "\n"
+        + "=" * 60
+    )
 
-    # Use one of the measured in-scope knowledge-base questions.
+    print(
+        "DEMONSTRATION 1 - RAG TOOL"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    # Use a real in-scope policy question.
     demo_question = (
         "What degree is required for most professional jobs?"
     )
 
-    # Create a dedicated Retrieval Agent for the demonstration.
+    # Build a one-agent Retrieval demonstration.
     demo_agent = Agent(
         role="HR Knowledge Retrieval Agent",
 
@@ -2370,20 +2684,18 @@ def demonstrate_rag_tool():
             "Use the RAG tool and do not invent information."
         ),
 
-        # Give the demo agent only the RAG tool.
-        tools=[rag_search],
+        tools=[
+            rag_search
+        ],
 
-        # Use the shared deterministic model.
         llm=mock_llm,
 
-        # Prevent delegation.
         allow_delegation=False,
 
-        # Enable visible execution output.
-        verbose=True
+        verbose=True,
     )
 
-    # Create the demonstration task.
+    # Task given to the demonstration agent.
     demo_task = Task(
         description=(
             "Use the RAG tool to answer this HR question:\n\n"
@@ -2395,31 +2707,36 @@ def demonstrate_rag_tool():
             "knowledge base."
         ),
 
-        agent=demo_agent
+        agent=demo_agent,
     )
 
-    # Create a one-agent demonstration Crew.
+    # One-agent demonstration Crew.
     demo_crew = Crew(
-        agents=[demo_agent],
+        agents=[
+            demo_agent
+        ],
 
-        tasks=[demo_task],
+        tasks=[
+            demo_task
+        ],
 
         process=Process.sequential,
 
-        verbose=True
+        verbose=True,
     )
 
-    # Execute the actual CrewAI tool path.
+    # Execute actual CrewAI kickoff().
     result = demo_crew.kickoff()
 
-    # Validate the result with the Task 9 schema.
+    # Validate result.
     validated_response = validate_crew_response(
         crew_result=result,
-        query=demo_question
+        query=demo_question,
     )
 
-    # Print the structured validation evidence.
-    print("\nRAG demonstration validated result:")
+    print(
+        "\nRAG demonstration validated result:"
+    )
 
     if validated_response is not None:
 
@@ -2429,26 +2746,33 @@ def demonstrate_rag_tool():
 
 
 # ============================================================
-# TASK 7 - LOOKUP DEMONSTRATION
+# TASK 7 - LOOKUP TOOL DEMONSTRATION
 # ============================================================
 
 def demonstrate_lookup_tool():
     """
-    Demonstrate actual Task 6 application lookup through kickoff().
+    Demonstrate Task 6 application lookup through CrewAI kickoff().
     """
 
-    # Print a clear demonstration heading.
-    print("\n")
-    print("=" * 60)
-    print("DEMONSTRATION 2 - LOOKUP TOOL")
-    print("=" * 60)
+    print(
+        "\n"
+        + "=" * 60
+    )
 
-    # Use APP001 as the deterministic demonstration record.
+    print(
+        "DEMONSTRATION 2 - LOOKUP TOOL"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    # Deterministic sample record.
     demo_question = (
         "What is the status of application APP001?"
     )
 
-    # Create a dedicated Lookup Agent.
+    # One-agent Lookup demonstration.
     demo_agent = Agent(
         role="Job Application Lookup Agent",
 
@@ -2461,20 +2785,18 @@ def demonstrate_lookup_tool():
             "Use the lookup tool and do not invent application data."
         ),
 
-        # Give this agent only the privileged application lookup.
-        tools=[lookup_job_application_status],
+        tools=[
+            lookup_job_application_status
+        ],
 
-        # Use the deterministic model.
         llm=mock_llm,
 
-        # Prevent delegation.
         allow_delegation=False,
 
-        # Enable visible execution output.
-        verbose=True
+        verbose=True,
     )
 
-    # Create the application lookup demonstration task.
+    # Task containing APP001.
     demo_task = Task(
         description=(
             "Use the job application lookup tool to check "
@@ -2486,32 +2808,37 @@ def demonstrate_lookup_tool():
             "Task 6 lookup tool."
         ),
 
-        agent=demo_agent
+        agent=demo_agent,
     )
 
-    # Create a one-agent demonstration Crew.
+    # Create demonstration Crew.
     demo_crew = Crew(
-        agents=[demo_agent],
+        agents=[
+            demo_agent
+        ],
 
-        tasks=[demo_task],
+        tasks=[
+            demo_task
+        ],
 
         process=Process.sequential,
 
-        verbose=True
+        verbose=True,
     )
 
-    # Execute the actual lookup path.
+    # Run actual kickoff().
     result = demo_crew.kickoff()
 
-    # Validate the lookup result through Task 9.
+    # Validate using Task 9 schema.
     validated_response = validate_crew_response(
         crew_result=result,
         query=demo_question,
-        record_id="APP001"
+        record_id="APP001",
     )
 
-    # Print the validated evidence.
-    print("\nLookup demonstration validated result:")
+    print(
+        "\nLookup demonstration validated result:"
+    )
 
     if validated_response is not None:
 
@@ -2526,16 +2853,24 @@ def demonstrate_lookup_tool():
 
 def run_complete_crew():
     """
-    Execute the complete three-agent Task 7 workflow.
+    Execute the complete three-agent sequential CrewAI workflow.
     """
 
-    # Print a clear demonstration heading.
-    print("\n")
-    print("=" * 60)
-    print("COMPLETE THREE-AGENT CREW")
-    print("=" * 60)
+    print(
+        "\n"
+        + "=" * 60
+    )
 
-    # Build one deterministic three-agent input example.
+    print(
+        "COMPLETE THREE-AGENT CREW"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    # Example input demonstrates that the Crew can receive both
+    # a policy query and an application ID in one kickoff context.
     inputs = {
         "rag_query": (
             "What degree is required for most professional jobs?"
@@ -2545,23 +2880,24 @@ def run_complete_crew():
             "What degree is required for most professional jobs?"
         ),
 
-        "record_id": "APP001"
+        "record_id": "APP001",
     }
 
-    # Execute the shared Crew.
+    # Execute shared three-agent Crew.
     result = crew.kickoff(
         inputs=inputs
     )
 
-    # Validate the final output using Task 9.
+    # Validate the final result.
     validated_response = validate_crew_response(
         crew_result=result,
         query=inputs["user_question"],
-        record_id=inputs["record_id"]
+        record_id=inputs["record_id"],
     )
 
-    # Print the final structured response.
-    print("\nFinal Validated Response:")
+    print(
+        "\nFinal Validated Response:"
+    )
 
     if validated_response is not None:
 
@@ -2569,9 +2905,10 @@ def run_complete_crew():
             validated_response.model_dump()
         )
 
-        return validated_response.final_answer
+        return (
+            validated_response.final_answer
+        )
 
-    # Report validation failure.
     print(
         "Crew response validation failed."
     )
@@ -2585,33 +2922,57 @@ def run_complete_crew():
 
 def demonstrate_session_memory():
     """
-    Demonstrate:
-        1. same-session application-ID recovery
-        2. fresh-session isolation
+    Demonstrate both same-session memory and fresh-session isolation.
+
+    Demonstration 1:
+        APP001 is selected in Turn 1.
+        Turn 2 refers indirectly to the same application.
+
+    Demonstration 2:
+        A new session asks the same indirect question.
+        APP001 must not be inherited.
     """
 
-    # --------------------------------------------------------
+    # ========================================================
     # SAME SESSION
-    # --------------------------------------------------------
+    # ========================================================
 
-    print("\n")
-    print("=" * 60)
-    print("TASK 8 - TRANSCRIPT 1")
-    print("SAME SESSION / TWO TURNS")
-    print("=" * 60)
+    print(
+        "\n"
+        + "=" * 60
+    )
 
-    # Define the first demonstration session.
-    session_1 = "student_session_001"
+    print(
+        "TASK 8 - TRANSCRIPT 1"
+    )
 
-    # First turn explicitly mentions APP001.
+    print(
+        "SAME SESSION / TWO TURNS"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    # First session identifier.
+    session_1 = (
+        "student_session_001"
+    )
+
+    # First turn explicitly gives APP001.
     turn_1_question = (
         "What is the status of application APP001?"
     )
 
-    print("\nUSER - Turn 1:")
-    print(turn_1_question)
+    print(
+        "\nUSER - Turn 1:"
+    )
 
-    # Execute Turn 1 with the same session ID.
+    print(
+        turn_1_question
+    )
+
+    # Execute first turn.
     turn_1_response = crew_with_memory.invoke(
         {
             "query": turn_1_question
@@ -2620,13 +2981,18 @@ def demonstrate_session_memory():
             "configurable": {
                 "session_id": session_1
             }
-        }
+        },
     )
 
-    print("\nCREW - Turn 1:")
-    print(turn_1_response)
+    print(
+        "\nCREW - Turn 1:"
+    )
 
-    # Assert that Turn 1 selected APP001.
+    print(
+        turn_1_response
+    )
+
+    # Confirm APP001 was selected.
     if LAST_SELECTED_RECORD_ID != "APP001":
 
         raise AssertionError(
@@ -2637,15 +3003,20 @@ def demonstrate_session_memory():
         "\n[PASS] Turn 1 selected APP001."
     )
 
-    # Second turn refers indirectly to the previous application.
+    # Second turn deliberately omits APP001.
     turn_2_question = (
         "What was the escalation score for that application?"
     )
 
-    print("\nUSER - Turn 2:")
-    print(turn_2_question)
+    print(
+        "\nUSER - Turn 2:"
+    )
 
-    # Execute Turn 2 using the same session ID.
+    print(
+        turn_2_question
+    )
+
+    # Execute second turn using the SAME session.
     turn_2_response = crew_with_memory.invoke(
         {
             "query": turn_2_question
@@ -2654,13 +3025,18 @@ def demonstrate_session_memory():
             "configurable": {
                 "session_id": session_1
             }
-        }
+        },
     )
 
-    print("\nCREW - Turn 2:")
-    print(turn_2_response)
+    print(
+        "\nCREW - Turn 2:"
+    )
 
-    # Assert that APP001 was recovered from the same session.
+    print(
+        turn_2_response
+    )
+
+    # Verify memory recovered APP001.
     if LAST_SELECTED_RECORD_ID != "APP001":
 
         raise AssertionError(
@@ -2671,14 +3047,15 @@ def demonstrate_session_memory():
         "\n[PASS] Turn 2 recovered APP001 from session memory."
     )
 
-    # Retrieve the complete Session 1 history.
+    # Read complete stored history.
     session_1_history = get_session_history(
         session_1
     )
 
-    print("\nSESSION 1 STORED HISTORY:")
+    print(
+        "\nSESSION 1 STORED HISTORY:"
+    )
 
-    # Display the stored history for evidence.
     for message in session_1_history.messages:
 
         print(
@@ -2686,13 +3063,13 @@ def demonstrate_session_memory():
             f"{message.content}"
         )
 
-    # Count user messages.
+    # Count human/user messages.
     session_1_user_messages = sum(
         message.type == "human"
         for message in session_1_history.messages
     )
 
-    # Task 8 requires exactly two user turns in Session 1.
+    # Two user turns must exist.
     if session_1_user_messages != 2:
 
         raise AssertionError(
@@ -2704,28 +3081,46 @@ def demonstrate_session_memory():
         "[PASS] Session 1 contains both user turns."
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # FRESH SESSION
-    # --------------------------------------------------------
+    # ========================================================
 
-    print("\n")
-    print("=" * 60)
-    print("TASK 8 - TRANSCRIPT 2")
-    print("FRESH SESSION / ONE TURN")
-    print("=" * 60)
+    print(
+        "\n"
+        + "=" * 60
+    )
 
-    # Define a completely different session.
-    session_2 = "student_session_002"
+    print(
+        "TASK 8 - TRANSCRIPT 2"
+    )
 
-    # This question contains no application ID.
+    print(
+        "FRESH SESSION / ONE TURN"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    # Different session ID.
+    session_2 = (
+        "student_session_002"
+    )
+
+    # No APP### appears in this message.
     fresh_question = (
         "What was the escalation score for that application?"
     )
 
-    print("\nUSER - Fresh Session:")
-    print(fresh_question)
+    print(
+        "\nUSER - Fresh Session:"
+    )
 
-    # Execute the same question in the new session.
+    print(
+        fresh_question
+    )
+
+    # Execute in a completely new session.
     fresh_response = crew_with_memory.invoke(
         {
             "query": fresh_question
@@ -2734,13 +3129,18 @@ def demonstrate_session_memory():
             "configurable": {
                 "session_id": session_2
             }
-        }
+        },
     )
 
-    print("\nCREW - Fresh Session:")
-    print(fresh_response)
+    print(
+        "\nCREW - Fresh Session:"
+    )
 
-    # The new session must NOT inherit APP001.
+    print(
+        fresh_response
+    )
+
+    # The fresh session must not inherit APP001.
     if LAST_SELECTED_RECORD_ID is not None:
 
         raise AssertionError(
@@ -2752,14 +3152,15 @@ def demonstrate_session_memory():
         "\n[PASS] Fresh session selected no application ID."
     )
 
-    # Retrieve Session 2 history.
+    # Read Session 2 history.
     session_2_history = get_session_history(
         session_2
     )
 
-    print("\nSESSION 2 STORED HISTORY:")
+    print(
+        "\nSESSION 2 STORED HISTORY:"
+    )
 
-    # Display Session 2 history.
     for message in session_2_history.messages:
 
         print(
@@ -2767,13 +3168,12 @@ def demonstrate_session_memory():
             f"{message.content}"
         )
 
-    # Count Session 2 user turns.
+    # Count human messages in fresh session.
     session_2_user_messages = sum(
         message.type == "human"
         for message in session_2_history.messages
     )
 
-    # Task 8 requires exactly one user turn in the fresh session.
     if session_2_user_messages != 1:
 
         raise AssertionError(
@@ -2785,7 +3185,6 @@ def demonstrate_session_memory():
         "[PASS] Session 2 contains exactly one user turn."
     )
 
-    # Final Task 8 success evidence.
     print(
         "\n[PASS] Task 8 session-memory demonstration completed."
     )
@@ -2797,28 +3196,40 @@ def demonstrate_session_memory():
 
 def main():
     """
-    Run the Task 7, Task 8, and Task 9 demonstrations.
+    Run the Task 7, Task 8 and Task 9 demonstrations.
 
     Task 16's dedicated cache demonstration remains in
-    response_cache.py so it can independently prove cache
-    normalization, hit/miss behavior, and reduced real-RAG calls.
+    response_cache.py so that it can independently prove:
+        - normalization
+        - cache miss
+        - real RAG execution
+        - cache hit
+        - duplicate real-RAG call avoidance
     """
 
-    # Print the module heading.
-    print("=" * 60)
-    print("TASK 7 + TASK 8 + TASK 9 - CREWAI HR AUTOMATION")
-    print("=" * 60)
+    # Print module heading.
+    print(
+        "=" * 60
+    )
 
-    # Demonstrate real RAG tool execution.
+    print(
+        "TASK 7 + TASK 8 + TASK 9 - CREWAI HR AUTOMATION"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    # Demonstrate actual RAG tool invocation.
     demonstrate_rag_tool()
 
-    # Demonstrate application lookup.
+    # Demonstrate actual application lookup.
     demonstrate_lookup_tool()
 
     # Demonstrate the complete three-agent workflow.
     run_complete_crew()
 
-    # Demonstrate same-session memory and fresh-session isolation.
+    # Demonstrate session memory.
     demonstrate_session_memory()
 
 
@@ -2826,6 +3237,7 @@ def main():
 # PYTHON ENTRY POINT
 # ============================================================
 
-# Run the demonstrations only when this file is executed directly.
+# Execute demonstrations only when this file is launched directly.
 if __name__ == "__main__":
+
     main()

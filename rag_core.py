@@ -1,58 +1,121 @@
-# Import Path so we can work with folders and file paths easily.
+# ============================================================
+# Task 3 + Task 4 + Task 5 - RAG Core
+# Naukri.com Domain Support Agent
+# ============================================================
+#
+# This module implements the complete Part 1 RAG layer:
+#
+# Task 3:
+#   - Load the HR knowledge-base documents.
+#   - Create fixed-size chunks.
+#   - Create sentence-based chunks.
+#   - Generate local SentenceTransformers embeddings.
+#   - Store both strategies in separate ChromaDB collections.
+#
+# Task 4:
+#   - Measure representative in-scope queries.
+#   - Measure deliberately out-of-scope queries.
+#   - Calibrate the groundedness threshold empirically.
+#   - IMPORTANT: calibration uses ONLY the production
+#     fixed_chunks collection.
+#   - Demonstrate grounded answers and the fallback answer.
+#
+# Task 5:
+#   - Evaluate fixed_chunks and sentence_chunks independently.
+#   - Map retrieved chunks back to parent documents.
+#   - Deduplicate parent documents.
+#   - Calculate document-level precision and recall.
+#   - Recommend the stronger chunking strategy.
+#
+# IMPORTANT DESIGN DECISION
+# -------------------------
+# Task 4 and the live CrewAI system use fixed_chunks because
+# fixed_chunks is the selected production retrieval strategy.
+#
+# Task 5 still evaluates BOTH collections separately.
+#
+# We deliberately do NOT use a "best of both collections"
+# retrieval decision for production threshold calibration.
+# Mixing collection scores would make the threshold inconsistent
+# with the collection actually used by the deployed agent.
+# ============================================================
+
+
+# ============================================================
+# STANDARD-LIBRARY IMPORTS
+# ============================================================
+
+# Path provides a platform-independent way to work with
+# filesystem paths such as "knowledge_base/" and "README.md".
 from pathlib import Path
 
-# Import re so we can split text into sentences.
+# re is used for sentence splitting and safe replacement of
+# README sections marked with explicit start/end comments.
 import re
 
-# Import statistics so we can calculate a threshold when score groups overlap.
+# statistics is used as a fallback when the in-scope and
+# out-of-scope similarity distributions overlap.
 import statistics
 
-# Import ChromaDB because it is the local vector database used in the project.
+
+# ============================================================
+# THIRD-PARTY IMPORTS
+# ============================================================
+
+# ChromaDB provides the local persistent vector database used
+# to index and retrieve embedded knowledge-base chunks.
 import chromadb
 
-# Import SentenceTransformer because it creates local text embeddings.
+# SentenceTransformer loads the local all-MiniLM-L6-v2 model
+# used to create query and document embeddings without requiring
+# a paid external embedding API.
 from sentence_transformers import SentenceTransformer
 
 
 # ============================================================
-# Project settings
+# PROJECT SETTINGS
 # ============================================================
 
-# Store the path of the folder containing the knowledge-base documents.
+# Folder containing the original HR knowledge-base text files.
 KNOWLEDGE_BASE = Path("knowledge_base")
 
-# Store the path where ChromaDB will persist its database files.
+# Folder where the persistent ChromaDB database is stored.
 CHROMA_PATH = "chroma_db"
 
-# Define the free local SentenceTransformers embedding model.
+# Local free embedding model required by the capstone.
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-# Define the size of each fixed-size chunk.
+# Maximum character length for fixed-size chunks.
 CHUNK_SIZE = 200
 
-# Define how many characters should overlap between fixed-size chunks.
+# Character overlap between consecutive fixed-size chunks.
 CHUNK_OVERLAP = 50
 
-# Define how many sentences should be placed into one sentence-based chunk.
+# Number of sentences placed into one sentence-based chunk.
 SENTENCES_PER_CHUNK = 2
 
-# Define how many chunks should be retrieved for each query.
+# Number of chunks retrieved for each query.
 TOP_K = 3
 
-# Keep MOCK_LLM enabled because the assignment does not require a paid LLM API.
+# The capstone demonstrations use deterministic MOCK_LLM behavior.
+# This flag is retained here for compatibility/documentation.
 MOCK_LLM = True
 
-# Define the message used when a query is below the calibrated threshold.
-FALLBACK_MESSAGE = "I don't know based on the available knowledge base."
+# Required fallback when retrieval is below the calibrated
+# groundedness threshold.
+FALLBACK_MESSAGE = (
+    "I don't know based on the available knowledge base."
+)
 
 
 # ============================================================
-# Calibration questions
+# TASK 4 - CALIBRATION QUESTIONS
 # ============================================================
 
-# These questions are covered by the knowledge base.
-# The first five are also used later for Task 4 demonstration
-# and Task 5 evaluation.
+# These queries are intentionally covered by the HR knowledge base.
+#
+# The first five are also reused by Task 5 so the same evaluation
+# questions are applied to both chunking strategies.
 IN_SCOPE_QUERIES = [
     "What degree is required for most professional jobs?",
     "How much notice should a candidate get before an interview?",
@@ -63,7 +126,10 @@ IN_SCOPE_QUERIES = [
 ]
 
 
-# These questions are deliberately outside the knowledge base.
+# These queries are deliberately outside the project knowledge base.
+#
+# They are used to identify a lower similarity cluster for the
+# empirical groundedness-threshold calibration.
 OUT_OF_SCOPE_QUERIES = [
     "What is the capital of France?",
     "What is the weather forecast for tomorrow?",
@@ -72,26 +138,22 @@ OUT_OF_SCOPE_QUERIES = [
 
 
 # ============================================================
-# Task 5 - queries
+# TASK 5 - EVALUATION QUERIES
 # ============================================================
 
-# Use the same five in-scope queries that were demonstrated in Task 4.
-# This is important because Task 5 asks us to use the same queries.
+# The capstone asks Task 5 to use the same five queries that were
+# used for the Task 4 grounded-generation demonstration.
 TASK5_QUERIES = IN_SCOPE_QUERIES[:5]
 
 
 # ============================================================
-# Task 5 - ground truth
+# TASK 5 - GROUND TRUTH
 # ============================================================
 
-# Define the correct parent document for every Task 5 query.
+# Map each evaluation query to the correct PARENT document.
 #
-# These are parent document names, not chunk IDs.
-#
-# For example:
-# If several chunks come from 02_interview_scheduling,
-# they still count as only one retrieved document during
-# Task 5 evaluation.
+# The values are source-document names rather than individual
+# chunk IDs because Task 5 requires document-level scoring.
 GROUND_TRUTH = {
     "What degree is required for most professional jobs?": {
         "01_eligibility_criteria"
@@ -112,35 +174,54 @@ GROUND_TRUTH = {
 
 
 # ============================================================
-# Task 3 - load documents
+# TASK 3 - LOAD DOCUMENTS
 # ============================================================
 
 def load_documents(folder_path):
-    # Create an empty list where all documents will be stored.
+    """
+    Load all non-empty TXT files from the knowledge-base folder.
+
+    Parameters
+    ----------
+    folder_path : pathlib.Path
+        Directory containing the knowledge-base text files.
+
+    Returns
+    -------
+    list[dict]
+        Each dictionary contains:
+        - source: source document name without extension
+        - text: complete document text
+    """
+
+    # Store all loaded documents in this list.
     documents = []
 
-    # Find every TXT file in the knowledge-base folder.
-    # sorted() keeps the order predictable.
+    # Read TXT files in deterministic alphabetical order.
     for file_path in sorted(folder_path.glob("*.txt")):
 
-        # Read the complete file using UTF-8 encoding.
-        text = file_path.read_text(encoding="utf-8").strip()
+        # Read the complete source document using UTF-8.
+        text = file_path.read_text(
+            encoding="utf-8"
+        ).strip()
 
-        # Ignore a file when it is empty.
+        # Ignore empty files.
         if text:
 
-            # Store the document source name and its text.
-            documents.append({
-                "source": file_path.stem,
-                "text": text,
-            })
+            # Store only the metadata needed by later functions.
+            documents.append(
+                {
+                    "source": file_path.stem,
+                    "text": text,
+                }
+            )
 
-    # Return the complete list of loaded documents.
+    # Return the complete document collection.
     return documents
 
 
 # ============================================================
-# Task 3 - fixed-size chunking
+# TASK 3 - FIXED-SIZE CHUNKING
 # ============================================================
 
 def fixed_size_chunks(
@@ -148,97 +229,144 @@ def fixed_size_chunks(
     chunk_size=CHUNK_SIZE,
     overlap=CHUNK_OVERLAP,
 ):
-    # Make sure the chunk size is greater than zero.
+    """
+    Split text into fixed-size overlapping chunks.
+
+    Parameters
+    ----------
+    text : str
+        Source document text.
+
+    chunk_size : int
+        Maximum number of characters in each chunk.
+
+    overlap : int
+        Number of characters shared by consecutive chunks.
+
+    Returns
+    -------
+    list[str]
+        Generated fixed-size chunks.
+
+    Notes
+    -----
+    Task 3 uses:
+        chunk_size = 200
+        overlap    = 50
+    """
+
+    # Chunk size must be positive.
     if chunk_size <= 0:
         raise ValueError(
             "chunk_size must be greater than 0."
         )
 
-    # Make sure the overlap is not negative.
+    # Negative overlap is invalid.
     if overlap < 0:
         raise ValueError(
             "overlap cannot be negative."
         )
 
-    # The overlap cannot be equal to or larger than the chunk size.
+    # An overlap equal to or larger than the chunk size would
+    # prevent the sliding window from progressing correctly.
     if overlap >= chunk_size:
         raise ValueError(
             "overlap must be smaller than chunk_size."
         )
 
-    # Create an empty list to store the generated chunks.
+    # Store all generated chunks here.
     chunks = []
 
-    # Start reading the document from character position zero.
+    # Start from the first character.
     start = 0
 
-    # Continue creating chunks until the complete document is processed.
+    # Continue until the entire document has been processed.
     while start < len(text):
 
-        # Calculate the ending character position for the current chunk.
+        # Calculate the normal fixed-size endpoint.
         end = start + chunk_size
 
-        # Extract the current chunk.
+        # Extract the chunk and remove surrounding whitespace.
         chunk = text[start:end].strip()
 
-        # Add the chunk only when it contains text.
+        # Only retain non-empty chunks.
         if chunk:
             chunks.append(chunk)
 
-        # Stop when we have reached the end of the document.
+        # Stop after processing the final portion of the text.
         if end >= len(text):
             break
 
-        # Move forward while keeping the requested character overlap.
+        # Move forward while preserving the requested overlap.
         start = end - overlap
 
-    # Return all fixed-size chunks.
+    # Return the complete fixed-size chunk list.
     return chunks
 
 
 # ============================================================
-# Task 3 - sentence-based chunking
+# TASK 3 - SENTENCE-BASED CHUNKING
 # ============================================================
 
 def sentence_based_chunks(
     text,
     sentences_per_chunk=SENTENCES_PER_CHUNK,
 ):
-    # Make sure at least one sentence is included in each chunk.
+    """
+    Split a document into chunks containing a fixed number of
+    complete sentences.
+
+    Parameters
+    ----------
+    text : str
+        Source document text.
+
+    sentences_per_chunk : int
+        Number of sentences grouped into one chunk.
+
+    Returns
+    -------
+    list[str]
+        Sentence-based chunks.
+    """
+
+    # At least one sentence must be placed in each chunk.
     if sentences_per_chunk <= 0:
         raise ValueError(
             "sentences_per_chunk must be greater than 0."
         )
 
-    # Split the document after ., !, or ? followed by whitespace.
+    # Split whenever ., ! or ? is followed by whitespace.
     sentences = re.split(
         r"(?<=[.!?])\s+",
         text.strip(),
     )
 
-    # Remove empty sentences and remove extra spaces.
+    # Remove empty values and normalize surrounding whitespace.
     sentences = [
         sentence.strip()
         for sentence in sentences
         if sentence.strip()
     ]
 
-    # Create an empty list for the sentence-based chunks.
+    # Store the final sentence chunks.
     chunks = []
 
-    # Process the sentences in groups of the requested size.
-    for i in range(
+    # Process sentences in groups of the requested size.
+    for index in range(
         0,
         len(sentences),
         sentences_per_chunk,
     ):
 
-        # Combine the required number of sentences into one chunk.
+        # Combine the current sentence group into one chunk.
         chunk = " ".join(
-            sentences[i:i + sentences_per_chunk]
+            sentences[
+                index:index + sentences_per_chunk
+            ]
         ).strip()
 
-        # Add the chunk only when it contains text.
+        # Keep only non-empty chunks.
         if chunk:
             chunks.append(chunk)
 
@@ -247,63 +375,124 @@ def sentence_based_chunks(
 
 
 # ============================================================
-# Task 3 - build chunks with parent document information
+# TASK 3 - BUILD CHUNKS WITH PARENT DOCUMENT METADATA
 # ============================================================
 
-def build_chunks(documents, chunk_function):
-    # Create an empty list for all generated chunks.
+def build_chunks(
+    documents,
+    chunk_function,
+):
+    """
+    Apply a chunking strategy to every parent document.
+
+    Parameters
+    ----------
+    documents : list[dict]
+        Documents returned by load_documents().
+
+    chunk_function : callable
+        Either fixed_size_chunks or sentence_based_chunks.
+
+    Returns
+    -------
+    list[dict]
+        Each chunk contains:
+        - id
+        - text
+        - source
+    """
+
+    # Store all generated chunks.
     all_chunks = []
 
-    # Process every parent document.
+    # Process each parent document independently.
     for document in documents:
 
-        # Generate chunks using the supplied chunking function.
-        chunks = chunk_function(document["text"])
+        # Create chunks using the supplied strategy.
+        chunks = chunk_function(
+            document["text"]
+        )
 
-        # Process every chunk created from this document.
+        # Add metadata to every generated chunk.
         for index, chunk in enumerate(chunks):
 
-            # Store the chunk ID, text, and original parent document.
-            all_chunks.append({
-                "id": f"{document['source']}_{index}",
-                "text": chunk,
-                "source": document["source"],
-            })
+            # Construct a deterministic chunk ID.
+            chunk_id = (
+                f"{document['source']}_{index}"
+            )
 
-    # Return the complete list of chunks.
+            # Store chunk text together with parent source.
+            all_chunks.append(
+                {
+                    "id": chunk_id,
+                    "text": chunk,
+                    "source": document["source"],
+                }
+            )
+
+    # Return every generated chunk.
     return all_chunks
 
 
 # ============================================================
-# Task 3 / Task 4 - prepare ChromaDB collection
+# TASK 3 - PREPARE CHROMADB COLLECTION
 # ============================================================
 
-def prepare_collection(client, collection_name):
-    # Try to find an existing collection first.
-    try:
-        collection = client.get_collection(collection_name)
+def prepare_collection(
+    client,
+    collection_name,
+):
+    """
+    Create or retrieve a ChromaDB collection configured for
+    cosine distance.
 
-    # If the collection does not exist, set it to None.
+    Parameters
+    ----------
+    client : chromadb.PersistentClient
+        Persistent ChromaDB client.
+
+    collection_name : str
+        Name of the desired collection.
+
+    Returns
+    -------
+    chromadb.Collection
+        Ready-to-use collection configured for cosine distance.
+    """
+
+    # Try to retrieve an existing collection.
+    try:
+
+        collection = client.get_collection(
+            collection_name
+        )
+
+    # When it does not exist, get_collection() raises an exception.
     except Exception:
+
         collection = None
 
-    # Task 4 and Task 5 use cosine distance.
+    # If an old collection exists, confirm it uses cosine distance.
     if collection is not None:
 
-        # Read the existing collection metadata.
-        metadata = collection.metadata or {}
+        # Read collection metadata safely.
+        metadata = (
+            collection.metadata
+            or {}
+        )
 
-        # Check whether the collection is configured for cosine distance.
+        # Recreate the collection when the metric is incorrect.
         if metadata.get("hnsw:space") != "cosine":
 
-            # Delete the old collection when it uses another metric.
-            client.delete_collection(collection_name)
+            client.delete_collection(
+                collection_name
+            )
 
-            # Set collection to None so it can be recreated correctly.
             collection = None
 
-    # Create the collection when it does not already exist.
+    # Create the collection when it does not yet exist.
     if collection is None:
+
         collection = client.create_collection(
             name=collection_name,
             metadata={
@@ -316,37 +505,60 @@ def prepare_collection(client, collection_name):
 
 
 # ============================================================
-# Task 3 - store chunks in ChromaDB
+# TASK 3 - STORE CHUNKS
 # ============================================================
 
-def store_chunks(collection, chunks, model):
-    # Do nothing when the chunk list is empty.
+def store_chunks(
+    collection,
+    chunks,
+    model,
+):
+    """
+    Embed and upsert chunks into a ChromaDB collection.
+
+    Parameters
+    ----------
+    collection : chromadb.Collection
+        ChromaDB collection that will store the vectors.
+
+    chunks : list[dict]
+        Chunk dictionaries containing id/text/source.
+
+    model : SentenceTransformer
+        Local embedding model.
+
+    Returns
+    -------
+    None
+        Data is written directly into ChromaDB.
+    """
+
+    # Nothing needs to be done when the chunk list is empty.
     if not chunks:
         return
 
-    # Extract only the text from every chunk.
+    # Extract only chunk text for embedding.
     texts = [
         chunk["text"]
         for chunk in chunks
     ]
 
-    # Create a local embedding for every chunk.
+    # Generate normalized local embeddings.
     #
-    # normalize_embeddings=True makes the vectors normalized,
-    # which works correctly with cosine similarity.
+    # Normalized vectors work naturally with cosine similarity.
     embeddings = model.encode(
         texts,
         normalize_embeddings=True,
         show_progress_bar=True,
     ).tolist()
 
-    # Get the unique ID of every chunk.
+    # Extract deterministic chunk IDs.
     ids = [
         chunk["id"]
         for chunk in chunks
     ]
 
-    # Store the original parent document name as metadata.
+    # Preserve the parent source document in Chroma metadata.
     metadatas = [
         {
             "source": chunk["source"]
@@ -354,7 +566,8 @@ def store_chunks(collection, chunks, model):
         for chunk in chunks
     ]
 
-    # Upsert the chunks, embeddings, IDs, and metadata into ChromaDB.
+    # Upsert means insert new values or replace existing values
+    # with the same IDs.
     collection.upsert(
         ids=ids,
         documents=texts,
@@ -364,7 +577,7 @@ def store_chunks(collection, chunks, model):
 
 
 # ============================================================
-# Task 4 - retrieve chunks from one collection
+# TASK 4 / TASK 5 - RETRIEVE FROM ONE COLLECTION
 # ============================================================
 
 def retrieve(
@@ -373,15 +586,44 @@ def retrieve(
     model,
     top_k=TOP_K,
 ):
-    # Convert the user query into an embedding.
+    """
+    Retrieve the top-k chunks from one specific ChromaDB collection.
+
+    Parameters
+    ----------
+    collection : chromadb.Collection
+        Collection to query.
+
+    query : str
+        User or evaluation question.
+
+    model : SentenceTransformer
+        Local embedding model.
+
+    top_k : int
+        Number of nearest chunks to retrieve.
+
+    Returns
+    -------
+    list[dict]
+        Retrieved results containing:
+        - text
+        - source
+        - similarity
+    """
+
+    # Convert the query into the same normalized embedding space
+    # used for document embeddings.
     query_embedding = model.encode(
         [query],
         normalize_embeddings=True,
     ).tolist()[0]
 
-    # Ask ChromaDB for the closest chunks.
+    # Ask ChromaDB for the nearest chunks.
     results = collection.query(
-        query_embeddings=[query_embedding],
+        query_embeddings=[
+            query_embedding
+        ],
         n_results=top_k,
         include=[
             "documents",
@@ -390,43 +632,46 @@ def retrieve(
         ],
     )
 
-    # ChromaDB returns cosine distance for this collection.
+    # Read ChromaDB cosine-distance values.
     distances = results["distances"][0]
 
-    # Convert cosine distance into cosine similarity.
+    # Convert cosine distance to cosine similarity.
     #
+    # For normalized vectors:
     # cosine similarity = 1 - cosine distance
     similarities = [
         1.0 - float(distance)
         for distance in distances
     ]
 
-    # Create a simple Python list for the retrieved results.
+    # Build a simpler Python representation for downstream code.
     retrieved = []
 
-    # Process the document, metadata, and similarity together.
+    # Combine text, metadata, and similarity score.
     for document, metadata, similarity in zip(
         results["documents"][0],
         results["metadatas"][0],
         similarities,
     ):
 
-        # Store the retrieved text, source, and similarity score.
-        retrieved.append({
-            "text": document,
-            "source": metadata.get(
-                "source",
-                "unknown",
-            ),
-            "similarity": similarity,
-        })
+        # Store the useful retrieval information.
+        retrieved.append(
+            {
+                "text": document,
+                "source": metadata.get(
+                    "source",
+                    "unknown",
+                ),
+                "similarity": similarity,
+            }
+        )
 
-    # Return the top-k retrieved chunks.
+    # Return the retrieved chunks in ChromaDB ranking order.
     return retrieved
 
 
 # ============================================================
-# Task 4 - choose the better collection
+# COMPARATIVE RETRIEVAL HELPER
 # ============================================================
 
 def retrieve_from_either_collection(
@@ -436,7 +681,44 @@ def retrieve_from_either_collection(
     sentence_collection,
     top_k=TOP_K,
 ):
-    # Retrieve results from the fixed-size collection.
+    """
+    Compare both collections and return the stronger one.
+
+    IMPORTANT
+    ---------
+    This helper is retained only for comparative experimentation.
+
+    It is NOT used for:
+        - Task 4 production threshold calibration
+        - Task 4 production grounded generation
+        - live CrewAI production retrieval
+
+    Task 4 and the deployed path use fixed_chunks explicitly.
+
+    Parameters
+    ----------
+    query : str
+        Query to evaluate.
+
+    model : SentenceTransformer
+        Embedding model.
+
+    fixed_collection : chromadb.Collection
+        Fixed-size collection.
+
+    sentence_collection : chromadb.Collection
+        Sentence-based collection.
+
+    top_k : int
+        Number of chunks to retrieve.
+
+    Returns
+    -------
+    tuple[str, list[dict]]
+        Collection name and retrieved results.
+    """
+
+    # Retrieve from the fixed-size collection.
     fixed_results = retrieve(
         fixed_collection,
         query,
@@ -444,7 +726,7 @@ def retrieve_from_either_collection(
         top_k,
     )
 
-    # Retrieve results from the sentence-based collection.
+    # Retrieve from the sentence-based collection.
     sentence_results = retrieve(
         sentence_collection,
         query,
@@ -452,144 +734,294 @@ def retrieve_from_either_collection(
         top_k,
     )
 
-    # Compare the strongest result from both collections.
-    if fixed_results[0]["similarity"] >= sentence_results[0]["similarity"]:
+    # Select the collection with the stronger top-1 result.
+    if (
+        fixed_results
+        and sentence_results
+        and fixed_results[0]["similarity"]
+        >= sentence_results[0]["similarity"]
+    ):
 
-        # Return the fixed-size collection when its top result is higher.
-        return "fixed_chunks", fixed_results
+        return (
+            "fixed_chunks",
+            fixed_results,
+        )
 
-    # Otherwise return the sentence-based collection.
-    return "sentence_chunks", sentence_results
+    # Handle the unlikely case where the sentence collection
+    # has the stronger or only available result.
+    return (
+        "sentence_chunks",
+        sentence_results,
+    )
 
 
 # ============================================================
-# Task 4 - measure calibration queries
+# TASK 4 - PRODUCTION CALIBRATION
 # ============================================================
 
-def measure_queries(
+def measure_fixed_collection_queries(
     queries,
     model,
     fixed_collection,
-    sentence_collection,
 ):
-    # Create an empty list for measured results.
+    """
+    Measure Task 4 calibration queries using ONLY fixed_chunks.
+
+    This is the key correction for Task 4.
+
+    The production system uses fixed_chunks, so the similarity
+    threshold must be calibrated on the same collection.
+
+    Parameters
+    ----------
+    queries : list[str]
+        Calibration questions.
+
+    model : SentenceTransformer
+        Local embedding model.
+
+    fixed_collection : chromadb.Collection
+        Production fixed_chunks collection.
+
+    Returns
+    -------
+    list[dict]
+        One measurement per query containing:
+        - query
+        - collection
+        - similarity
+    """
+
+    # Store calibration measurements.
     measurements = []
 
-    # Process every query.
+    # Measure every supplied query independently.
     for query in queries:
 
-        # Retrieve from both collections and select the stronger one.
-        collection_name, results = retrieve_from_either_collection(
+        # Retrieve only from the production collection.
+        results = retrieve(
+            fixed_collection,
             query,
             model,
-            fixed_collection,
-            sentence_collection,
+            TOP_K,
         )
 
-        # The first result is the top-1 result.
+        # Calibration cannot continue if no result exists.
+        if not results:
+
+            raise RuntimeError(
+                "No retrieval result was returned for "
+                f"calibration query: {query}"
+            )
+
+        # The highest-ranked result contains the top-1 similarity.
         top_result = results[0]
 
-        # Store the query, collection, and top-1 similarity.
-        measurements.append({
-            "query": query,
-            "collection": collection_name,
-            "similarity": top_result["similarity"],
-        })
+        # Store a transparent measurement record.
+        measurements.append(
+            {
+                "query": query,
+                "collection": "fixed_chunks",
+                "similarity": top_result[
+                    "similarity"
+                ],
+            }
+        )
 
-    # Return all measured values.
+    # Return all production-path measurements.
     return measurements
 
 
 # ============================================================
-# Task 4 - choose similarity threshold
+# TASK 4 - CHOOSE EMPIRICAL THRESHOLD
 # ============================================================
 
 def choose_threshold(
     in_scope,
     out_of_scope,
 ):
-    # Extract similarity scores for in-scope questions.
+    """
+    Calculate an empirical similarity threshold.
+
+    Strategy:
+        1. Find the minimum in-scope similarity.
+        2. Find the maximum out-of-scope similarity.
+        3. When the two groups are cleanly separated, choose the
+           midpoint between those boundary values.
+        4. If the groups overlap, use the midpoint between their
+           means as a deterministic fallback.
+
+    Parameters
+    ----------
+    in_scope : list[dict]
+        Fixed-path in-scope measurements.
+
+    out_of_scope : list[dict]
+        Fixed-path out-of-scope measurements.
+
+    Returns
+    -------
+    float
+        Calibrated groundedness threshold.
+    """
+
+    # Extract all in-scope scores.
     in_scores = [
         item["similarity"]
         for item in in_scope
     ]
 
-    # Extract similarity scores for out-of-scope questions.
+    # Extract all out-of-scope scores.
     out_scores = [
         item["similarity"]
         for item in out_of_scope
     ]
 
-    # Find the lowest in-scope similarity score.
-    lowest_in_scope = min(in_scores)
+    # Protect against accidental empty calibration sets.
+    if not in_scores:
 
-    # Find the highest out-of-scope similarity score.
-    highest_out_of_scope = max(out_scores)
+        raise ValueError(
+            "At least one in-scope calibration score is required."
+        )
 
-    # Check whether there is a clear gap between both groups.
+    if not out_scores:
+
+        raise ValueError(
+            "At least one out-of-scope calibration score is required."
+        )
+
+    # Identify the lowest supported-question score.
+    lowest_in_scope = min(
+        in_scores
+    )
+
+    # Identify the strongest unrelated-question score.
+    highest_out_of_scope = max(
+        out_scores
+    )
+
+    # When the clusters are separated, use the midpoint.
     if highest_out_of_scope < lowest_in_scope:
 
-        # Choose the midpoint of the measured gap.
-        return (
+        threshold = (
             highest_out_of_scope
             + lowest_in_scope
-        ) / 2
+        ) / 2.0
 
-    # When scores overlap, use the midpoint between
-    # the average in-scope and out-of-scope scores.
-    return (
-        statistics.mean(in_scores)
-        + statistics.mean(out_scores)
-    ) / 2
+    # When the clusters overlap, use the midpoint between
+    # the average scores as a deterministic fallback.
+    else:
+
+        threshold = (
+            statistics.mean(in_scores)
+            + statistics.mean(out_scores)
+        ) / 2.0
+
+    # Return the empirically calculated threshold.
+    return threshold
 
 
 # ============================================================
-# Task 4 - grounded generation
+# TASK 4 - PRODUCTION GROUNDED GENERATION
 # ============================================================
 
 def grounded_generate(
     query,
     model,
     fixed_collection,
-    sentence_collection,
     threshold,
     top_k=TOP_K,
 ):
-    # Retrieve the top-k chunks from the better collection.
-    collection_name, results = retrieve_from_either_collection(
+    """
+    Perform grounded generation using ONLY fixed_chunks.
+
+    IMPORTANT
+    ---------
+    The previous implementation selected whichever collection
+    had the stronger similarity score.
+
+    That behavior is intentionally removed here because the
+    production system has already selected fixed_chunks.
+
+    Parameters
+    ----------
+    query : str
+        Current user/evaluation question.
+
+    model : SentenceTransformer
+        Local embedding model.
+
+    fixed_collection : chromadb.Collection
+        Production fixed_chunks collection.
+
+    threshold : float
+        Empirically calibrated RAG threshold.
+
+    top_k : int
+        Number of chunks to retrieve.
+
+    Returns
+    -------
+    dict
+        Contains:
+        - query
+        - collection
+        - similarity
+        - decision
+        - answer
+    """
+
+    # Retrieve from the selected production collection only.
+    results = retrieve(
+        fixed_collection,
         query,
         model,
-        fixed_collection,
-        sentence_collection,
         top_k,
     )
 
-    # Get the highest similarity score.
-    top_similarity = results[0]["similarity"]
+    # Fail closed if retrieval returns no results.
+    if not results:
 
-    # Use the fallback when the score is below the threshold.
-    if top_similarity < threshold:
-
-        # Return the fallback result.
         return {
             "query": query,
-            "collection": collection_name,
+            "collection": "fixed_chunks",
+            "similarity": 0.0,
+            "decision": "FALLBACK",
+            "answer": FALLBACK_MESSAGE,
+        }
+
+    # Read the strongest retrieved similarity.
+    top_similarity = results[0][
+        "similarity"
+    ]
+
+    # Refuse unsupported questions.
+    if top_similarity < threshold:
+
+        return {
+            "query": query,
+            "collection": "fixed_chunks",
             "similarity": top_similarity,
             "decision": "FALLBACK",
             "answer": FALLBACK_MESSAGE,
         }
 
-    # MOCK_LLM means we do not call an external LLM.
-    # Therefore, the answer contains only retrieved knowledge-base text.
+    # MOCK_LLM mode does not call an external language model.
+    #
+    # Therefore the grounded answer is composed directly from
+    # the retrieved knowledge-base context.
     answer = "\n\n".join(
-        f"[Source: {item['source']}]\n{item['text']}"
+        (
+            f"[Source: {item['source']}]\n"
+            f"{item['text']}"
+        )
         for item in results
     )
 
-    # Return the grounded answer.
+    # Return the grounded result.
     return {
         "query": query,
-        "collection": collection_name,
+        "collection": "fixed_chunks",
         "similarity": top_similarity,
         "decision": "GROUNDED",
         "answer": answer,
@@ -597,29 +1029,30 @@ def grounded_generate(
 
 
 # ============================================================
-# Task 4 - README markers
+# TASK 4 - README MARKERS
 # ============================================================
 
-# Define markers used to protect the Task 4 README section.
+# Start marker used to safely replace only the generated Task 4
+# section without touching unrelated README content.
 README_START = "<!-- TASK4_START -->"
 
-# Define the ending marker for the Task 4 README section.
+# End marker for the generated Task 4 section.
 README_END = "<!-- TASK4_END -->"
 
 
 # ============================================================
-# Task 5 - README markers
+# TASK 5 - README MARKERS
 # ============================================================
 
-# Define the beginning marker for the Task 5 README section.
+# Start marker for the generated Task 5 section.
 TASK5_README_START = "<!-- TASK5_START -->"
 
-# Define the ending marker for the Task 5 README section.
+# End marker for the generated Task 5 section.
 TASK5_README_END = "<!-- TASK5_END -->"
 
 
 # ============================================================
-# Task 4 - update README
+# TASK 4 - UPDATE README
 # ============================================================
 
 def update_readme(
@@ -627,27 +1060,50 @@ def update_readme(
     out_of_scope,
     threshold,
 ):
-    # Use README.md from the current project folder.
+    """
+    Replace or append the generated Task 4 calibration section
+    in README.md.
+
+    Parameters
+    ----------
+    in_scope : list[dict]
+        Fixed-path in-scope calibration measurements.
+
+    out_of_scope : list[dict]
+        Fixed-path out-of-scope measurements.
+
+    threshold : float
+        Final calculated threshold.
+
+    Returns
+    -------
+    None
+    """
+
+    # README lives in the project root.
     readme_path = Path("README.md")
 
-    # Read the existing README when it already exists.
+    # Load the existing README when present.
     if readme_path.exists():
 
-        # Load the current README contents.
         existing = readme_path.read_text(
             encoding="utf-8"
         )
 
-    # Create a new README when no README exists.
     else:
 
-        # Start with a basic project heading.
-        existing = "# RAG Project\n"
+        # Create a minimal fallback only when README does not exist.
+        existing = (
+            "# Naukri.com Domain Support Agent\n"
+        )
 
-    # Create the beginning of the Task 4 README section.
+    # Begin the generated Task 4 section.
     lines = [
         README_START,
         "## Task 4 - Grounded Generation and Threshold Calibration",
+        "",
+        "Task 4 calibration is performed using only the "
+        "production `fixed_chunks` ChromaDB collection.",
         "",
         "### In-scope measurements",
         "",
@@ -655,50 +1111,55 @@ def update_readme(
         "|---|---|---:|",
     ]
 
-    # Add every in-scope query measurement to the table.
+    # Add every in-scope measurement.
     for item in in_scope:
 
-        # Add one Markdown table row.
         lines.append(
             f"| {item['query']} | "
             f"{item['collection']} | "
             f"{item['similarity']:.4f} |"
         )
 
-    # Add the out-of-scope results section.
-    lines.extend([
-        "",
-        "### Out-of-scope measurements",
-        "",
-        "| Query | Collection | Top-1 cosine similarity |",
-        "|---|---|---:|",
-    ])
+    # Add the out-of-scope measurements.
+    lines.extend(
+        [
+            "",
+            "### Out-of-scope measurements",
+            "",
+            "| Query | Collection | Top-1 cosine similarity |",
+            "|---|---|---:|",
+        ]
+    )
 
     # Add each out-of-scope measurement.
     for item in out_of_scope:
 
-        # Add one Markdown table row.
         lines.append(
             f"| {item['query']} | "
             f"{item['collection']} | "
             f"{item['similarity']:.4f} |"
         )
 
-    # Add the calculated threshold.
-    lines.extend([
-        "",
-        f"### Chosen threshold: `{threshold:.4f}`",
-        "",
-        "The threshold was calculated from the measured values. "
-        "No fixed 0.5, 0.6, or 0.7 preset was used.",
-        "",
-        README_END,
-    ])
+    # Add the final threshold explanation.
+    lines.extend(
+        [
+            "",
+            f"### Chosen threshold: `{threshold:.4f}`",
+            "",
+            "The threshold was empirically calculated from the "
+            "measured production fixed-path scores. No arbitrary "
+            "0.5, 0.6, or 0.7 preset was used.",
+            "",
+            README_END,
+        ]
+    )
 
-    # Combine all Task 4 lines into one text block.
-    new_block = "\n".join(lines)
+    # Convert the list of lines into Markdown text.
+    new_block = "\n".join(
+        lines
+    )
 
-    # Create a pattern that only matches the Task 4 section.
+    # Match ONLY the marked Task 4 block.
     pattern = re.compile(
         re.escape(README_START)
         + r".*?"
@@ -706,28 +1167,24 @@ def update_readme(
         re.DOTALL,
     )
 
-    # Replace the previous Task 4 section when it already exists.
+    # Replace the old generated section when it exists.
     if pattern.search(existing):
 
-        # Replace only the first Task 4 block.
         updated = pattern.sub(
             new_block,
             existing,
             count=1,
         )
 
-    # Otherwise append a new Task 4 section.
     else:
 
-        # Choose one or two new lines depending on the
-        # current ending of the README.
+        # Otherwise append a new Task 4 section.
         separator = (
             "\n"
             if existing.endswith("\n")
             else "\n\n"
         )
 
-        # Append the Task 4 section.
         updated = (
             existing
             + separator
@@ -735,7 +1192,7 @@ def update_readme(
             + "\n"
         )
 
-    # Save the updated README.
+    # Save the new README contents.
     readme_path.write_text(
         updated,
         encoding="utf-8",
@@ -743,7 +1200,7 @@ def update_readme(
 
 
 # ============================================================
-# Task 5 - evaluate one query
+# TASK 5 - EVALUATE ONE QUERY
 # ============================================================
 
 def evaluate_query(
@@ -754,13 +1211,41 @@ def evaluate_query(
     ground_truth,
     top_k=TOP_K,
 ):
-    # Retrieve the top-k chunks from ONLY this collection.
+    """
+    Evaluate one query against one ChromaDB collection.
+
+    Scoring is performed at the parent-document level.
+
+    Parameters
+    ----------
+    query : str
+        Evaluation query.
+
+    collection : chromadb.Collection
+        Collection being evaluated.
+
+    collection_name : str
+        Human-readable collection name.
+
+    model : SentenceTransformer
+        Embedding model.
+
+    ground_truth : dict
+        Mapping from query to correct parent documents.
+
+    top_k : int
+        Number of retrieved chunks.
+
+    Returns
+    -------
+    dict
+        Detailed precision/recall evidence.
+    """
+
+    # Retrieve chunks directly from THIS collection.
     #
-    # We deliberately call retrieve() directly.
-    #
-    # We do NOT call retrieve_from_either_collection()
-    # because Task 5 requires the two strategies to be
-    # evaluated independently.
+    # This direct call is critical because Task 5 requires both
+    # strategies to be evaluated independently.
     results = retrieve(
         collection,
         query,
@@ -768,85 +1253,63 @@ def evaluate_query(
         top_k,
     )
 
-    # Convert the retrieved chunk sources into a set.
-    #
-    # A Python set automatically removes duplicates.
-    #
-    # Example:
-    #
-    # 02_interview_scheduling
-    # 02_interview_scheduling
-    # 10_diversity_hiring
-    #
-    # becomes:
-    #
-    # {
-    #     "02_interview_scheduling",
-    #     "10_diversity_hiring"
-    # }
-    #
-    # This is exactly what the problem means by
-    # document-level deduplication.
+    # Convert chunk-level results into unique parent documents.
     retrieved_documents = {
         item["source"]
         for item in results
     }
 
-    # Get the ground-truth parent document set for this query.
-    correct_documents = ground_truth[query]
+    # Read the expected parent document set.
+    correct_documents = ground_truth[
+        query
+    ]
 
-    # Find the intersection between retrieved and correct documents.
-    #
-    # These are the documents that were retrieved AND are correct.
+    # Calculate the document-level true positives.
     true_positives = (
         retrieved_documents
         & correct_documents
     )
 
-    # Count the number of correctly retrieved unique documents.
-    true_positive_count = len(true_positives)
+    # Count correctly retrieved parent documents.
+    true_positive_count = len(
+        true_positives
+    )
 
-    # Count the number of unique documents retrieved.
-    retrieved_count = len(retrieved_documents)
+    # Count unique retrieved parent documents.
+    retrieved_count = len(
+        retrieved_documents
+    )
 
-    # Count the number of documents that should have been retrieved.
-    ground_truth_count = len(correct_documents)
+    # Count correct parent documents.
+    ground_truth_count = len(
+        correct_documents
+    )
 
-    # Calculate document-level precision.
-    #
-    # Precision =
-    # correct retrieved documents / total retrieved documents
+    # Calculate precision.
     if retrieved_count == 0:
 
-        # Return zero when nothing was retrieved.
         precision = 0.0
 
     else:
 
-        # Calculate the normal precision value.
         precision = (
             true_positive_count
             / retrieved_count
         )
 
-    # Calculate document-level recall.
-    #
-    # Recall =
-    # correct retrieved documents / total correct documents
+    # Calculate recall.
     if ground_truth_count == 0:
 
-        # Return zero when there is no ground truth.
         recall = 0.0
 
     else:
 
-        # Calculate the normal recall value.
         recall = (
             true_positive_count
             / ground_truth_count
         )
 
-    # Return all information required for Task 5.
+    # Return all information needed for the Task 5 evidence.
     return {
         "query": query,
         "collection": collection_name,
@@ -860,91 +1323,125 @@ def evaluate_query(
 
 
 # ============================================================
-# Task 5 - print one evaluation
+# TASK 5 - PRINT ONE EVALUATION
 # ============================================================
 
-def print_evaluation(evaluation):
-    # Print a separator so each evaluation is easy to read.
-    print("\n" + "=" * 80)
+def print_evaluation(
+    evaluation,
+):
+    """
+    Print full document-level precision/recall arithmetic for one
+    query.
 
-    # Print the query being evaluated.
-    print("Query:", evaluation["query"])
+    Parameters
+    ----------
+    evaluation : dict
+        Result returned by evaluate_query().
 
-    # Print the collection being evaluated.
-    print("Collection:", evaluation["collection"])
+    Returns
+    -------
+    None
+    """
 
-    # Show the raw retrieved chunks.
-    print("\nRetrieved chunks:")
+    # Make each query easy to distinguish in terminal output.
+    print(
+        "\n"
+        + "=" * 80
+    )
 
-    # Print every retrieved chunk.
+    # Print the evaluated query.
+    print(
+        "Query:",
+        evaluation["query"],
+    )
+
+    # Print the collection.
+    print(
+        "Collection:",
+        evaluation["collection"],
+    )
+
+    # Show each retrieved chunk.
+    print(
+        "\nRetrieved chunks:"
+    )
+
     for number, result in enumerate(
         evaluation["results"],
         start=1,
     ):
 
-        # Print the rank, source document, and similarity score.
         print(
             f"{number}. "
             f"[Source: {result['source']}] "
             f"Similarity: {result['similarity']:.4f}"
         )
 
-    # Show the unique parent documents after deduplication.
-    print("\nRetrieved unique documents:")
+    # Show deduplicated parent documents.
+    print(
+        "\nRetrieved unique documents:"
+    )
+
     print(
         sorted(
             evaluation["retrieved_documents"]
         )
     )
 
-    # Show the ground-truth documents.
-    print("Ground-truth documents:")
+    # Show expected documents.
+    print(
+        "Ground-truth documents:"
+    )
+
     print(
         sorted(
             evaluation["correct_documents"]
         )
     )
 
-    # Show which retrieved documents were actually correct.
-    print("Correct retrieved documents:")
+    # Show the document-level intersection.
+    print(
+        "Correct retrieved documents:"
+    )
+
     print(
         sorted(
             evaluation["true_positives"]
         )
     )
 
-    # Count the unique retrieved documents.
+    # Calculate counts used for explicit arithmetic output.
     retrieved_count = len(
         evaluation["retrieved_documents"]
     )
 
-    # Count the correctly retrieved documents.
     true_positive_count = len(
         evaluation["true_positives"]
     )
 
-    # Count the ground-truth documents.
     ground_truth_count = len(
         evaluation["correct_documents"]
     )
 
-    # Print the exact precision arithmetic.
+    # Print exact precision arithmetic.
     print(
         "\nPrecision = "
-        f"{true_positive_count} / {retrieved_count} "
-        f"= {evaluation['precision']:.4f}"
+        f"{true_positive_count} / "
+        f"{retrieved_count} = "
+        f"{evaluation['precision']:.4f}"
     )
 
-    # Print the exact recall arithmetic.
+    # Print exact recall arithmetic.
     print(
         "Recall = "
-        f"{true_positive_count} / {ground_truth_count} "
-        f"= {evaluation['recall']:.4f}"
+        f"{true_positive_count} / "
+        f"{ground_truth_count} = "
+        f"{evaluation['recall']:.4f}"
     )
 
 
 # ============================================================
-# Task 5 - evaluate one complete collection
+# TASK 5 - EVALUATE ONE COMPLETE COLLECTION
 # ============================================================
 
 def evaluate_collection(
@@ -953,13 +1450,35 @@ def evaluate_collection(
     collection_name,
     model,
 ):
-    # Create an empty list for all evaluations from this collection.
+    """
+    Evaluate all Task 5 queries against one collection.
+
+    Parameters
+    ----------
+    queries : list[str]
+        Evaluation questions.
+
+    collection : chromadb.Collection
+        Collection being evaluated.
+
+    collection_name : str
+        Name displayed in the results.
+
+    model : SentenceTransformer
+        Embedding model.
+
+    Returns
+    -------
+    list[dict]
+        Evaluation result for each query.
+    """
+
+    # Store the individual query results.
     evaluations = []
 
-    # Evaluate every query independently.
+    # Process all queries independently.
     for query in queries:
 
-        # Evaluate the current query.
         evaluation = evaluate_query(
             query,
             collection,
@@ -969,46 +1488,72 @@ def evaluate_collection(
             TOP_K,
         )
 
-        # Store the evaluation result.
-        evaluations.append(evaluation)
+        # Keep the result for average calculations.
+        evaluations.append(
+            evaluation
+        )
 
-        # Print the complete arithmetic for this query.
-        print_evaluation(evaluation)
+        # Print the full arithmetic immediately.
+        print_evaluation(
+            evaluation
+        )
 
-    # Return all evaluations from the collection.
+    # Return every evaluation.
     return evaluations
 
 
 # ============================================================
-# Task 5 - calculate average precision and recall
+# TASK 5 - CALCULATE AVERAGES
 # ============================================================
 
-def calculate_average_scores(evaluations):
-    # Extract the precision value from every query.
+def calculate_average_scores(
+    evaluations,
+):
+    """
+    Calculate average precision and recall across queries.
+
+    Parameters
+    ----------
+    evaluations : list[dict]
+        Results produced by evaluate_collection().
+
+    Returns
+    -------
+    tuple[float, float]
+        Average precision and average recall.
+    """
+
+    # Extract every precision result.
     precisions = [
         item["precision"]
         for item in evaluations
     ]
 
-    # Extract the recall value from every query.
+    # Extract every recall result.
     recalls = [
         item["recall"]
         for item in evaluations
     ]
 
-    # Calculate the average precision across all five queries.
+    # Prevent division by zero.
+    if not precisions:
+
+        raise ValueError(
+            "At least one evaluation is required."
+        )
+
+    # Calculate arithmetic averages.
     average_precision = (
         sum(precisions)
         / len(precisions)
     )
 
-    # Calculate the average recall across all five queries.
     average_recall = (
         sum(recalls)
         / len(recalls)
     )
 
-    # Return both calculated averages.
+    # Return both metrics.
     return (
         average_precision,
         average_recall,
@@ -1016,67 +1561,90 @@ def calculate_average_scores(evaluations):
 
 
 # ============================================================
-# Task 5 - compare both strategies
+# TASK 5 - COMPARE BOTH CHUNKING STRATEGIES
 # ============================================================
 
 def compare_chunking_strategies(
     fixed_evaluations,
     sentence_evaluations,
 ):
-    # Calculate the average precision and recall for fixed-size chunks.
+    """
+    Compare the Task 5 results from both chunking approaches.
+
+    The recommendation is based first on whether one strategy
+    dominates the other on both precision and recall.
+
+    When metrics are mixed, a combined average is used only as
+    a deterministic tie-breaker.
+
+    Parameters
+    ----------
+    fixed_evaluations : list[dict]
+        Fixed-size evaluation results.
+
+    sentence_evaluations : list[dict]
+        Sentence-based evaluation results.
+
+    Returns
+    -------
+    dict
+        Summary values and recommendation text.
+    """
+
+    # Calculate fixed-size averages.
     fixed_precision, fixed_recall = (
         calculate_average_scores(
             fixed_evaluations
         )
     )
 
-    # Calculate the average precision and recall for sentence chunks.
+    # Calculate sentence-based averages.
     sentence_precision, sentence_recall = (
         calculate_average_scores(
             sentence_evaluations
         )
     )
 
-    # Print the Task 5 summary heading.
-    print("\n" + "=" * 80)
-    print("TASK 5 SUMMARY")
+    # Print a clear summary.
+    print(
+        "\n"
+        + "=" * 80
+    )
 
-    # Print a comparison table.
+    print(
+        "TASK 5 SUMMARY"
+    )
+
     print(
         "\nCollection              "
         "Average Precision      Average Recall"
     )
 
-    # Print the fixed-size collection measurements.
     print(
         f"fixed_chunks            "
         f"{fixed_precision:.4f}                 "
         f"{fixed_recall:.4f}"
     )
 
-    # Print the sentence-based collection measurements.
     print(
         f"sentence_chunks         "
         f"{sentence_precision:.4f}                 "
         f"{sentence_recall:.4f}"
     )
 
-    # Calculate a simple overall average of precision and recall.
-    #
-    # This is only used to break a mixed result when one strategy
-    # has better precision and the other has better recall.
+    # Combined values are used only when the metrics are mixed.
     fixed_overall = (
         fixed_precision
         + fixed_recall
-    ) / 2
+    ) / 2.0
 
-    # Calculate the same combined value for sentence chunks.
     sentence_overall = (
         sentence_precision
         + sentence_recall
-    ) / 2
+    ) / 2.0
 
-    # Decide on the deployment recommendation.
+    # Fixed-size dominates when it is at least as good on both
+    # metrics and strictly better on at least one.
     if (
         fixed_precision >= sentence_precision
         and fixed_recall >= sentence_recall
@@ -1086,17 +1654,18 @@ def compare_chunking_strategies(
         )
     ):
 
-        # Fixed-size chunking is better on both metrics.
         recommendation = (
             f"I would deploy fixed-size chunking because it achieved "
-            f"an average precision of {fixed_precision:.4f} and an "
-            f"average recall of {fixed_recall:.4f}, compared with "
-            f"{sentence_precision:.4f} precision and "
-            f"{sentence_recall:.4f} recall for sentence-based chunking. "
-            f"It therefore provided the stronger overall retrieval "
-            f"performance across the five evaluation queries."
+            f"an average precision of {fixed_precision:.4f} and "
+            f"an average recall of {fixed_recall:.4f}, compared "
+            f"with {sentence_precision:.4f} precision and "
+            f"{sentence_recall:.4f} recall for sentence-based "
+            f"chunking. Fixed-size chunking therefore provided "
+            f"the stronger retrieval result across the evaluated "
+            f"queries."
         )
 
+    # Sentence-based dominates under the same rule.
     elif (
         sentence_precision >= fixed_precision
         and sentence_recall >= fixed_recall
@@ -1106,65 +1675,68 @@ def compare_chunking_strategies(
         )
     ):
 
-        # Sentence-based chunking is better on both metrics.
         recommendation = (
-            f"I would deploy sentence-based chunking because it achieved "
-            f"an average precision of {sentence_precision:.4f} and an "
-            f"average recall of {sentence_recall:.4f}, compared with "
+            f"I would deploy sentence-based chunking because it "
+            f"achieved an average precision of "
+            f"{sentence_precision:.4f} and an average recall of "
+            f"{sentence_recall:.4f}, compared with "
             f"{fixed_precision:.4f} precision and "
             f"{fixed_recall:.4f} recall for fixed-size chunking. "
-            f"It therefore provided the stronger overall retrieval "
-            f"performance across the five evaluation queries."
+            f"Sentence-based chunking therefore provided the "
+            f"stronger retrieval result across the evaluated "
+            f"queries."
         )
 
+    # When each strategy is stronger on a different metric,
+    # use the combined average as a deterministic tie-breaker.
     elif fixed_overall > sentence_overall:
 
-        # Fixed-size has the stronger combined average when the
-        # two individual metrics are mixed.
         recommendation = (
-            f"I would deploy fixed-size chunking because its average "
-            f"precision was {fixed_precision:.4f} and its average recall "
-            f"was {fixed_recall:.4f}, giving it a stronger combined "
-            f"retrieval score than sentence-based chunking, which had "
+            f"I would deploy fixed-size chunking because its "
+            f"average precision was {fixed_precision:.4f} and "
+            f"its average recall was {fixed_recall:.4f}, giving "
+            f"it the stronger combined retrieval result than "
+            f"sentence-based chunking, which achieved "
             f"{sentence_precision:.4f} precision and "
-            f"{sentence_recall:.4f} recall. "
-            f"This gives fixed-size chunking the better overall result "
-            f"for these five evaluation queries."
+            f"{sentence_recall:.4f} recall."
         )
 
     elif sentence_overall > fixed_overall:
 
-        # Sentence-based has the stronger combined average when the
-        # two individual metrics are mixed.
         recommendation = (
-            f"I would deploy sentence-based chunking because its average "
-            f"precision was {sentence_precision:.4f} and its average recall "
-            f"was {sentence_recall:.4f}, giving it a stronger combined "
-            f"retrieval score than fixed-size chunking, which had "
-            f"{fixed_precision:.4f} precision and "
-            f"{fixed_recall:.4f} recall. "
-            f"This gives sentence-based chunking the better overall result "
-            f"for these five evaluation queries."
+            f"I would deploy sentence-based chunking because "
+            f"its average precision was {sentence_precision:.4f} "
+            f"and its average recall was "
+            f"{sentence_recall:.4f}, giving it the stronger "
+            f"combined retrieval result than fixed-size chunking, "
+            f"which achieved {fixed_precision:.4f} precision and "
+            f"{fixed_recall:.4f} recall."
         )
 
+    # Exact tie.
     else:
 
-        # Both strategies have the same combined result.
         recommendation = (
-            f"Both strategies produced the same overall combined result. "
-            f"Fixed-size chunking achieved {fixed_precision:.4f} average "
-            f"precision and {fixed_recall:.4f} average recall, while "
-            f"sentence-based chunking achieved {sentence_precision:.4f} "
-            f"precision and {sentence_recall:.4f} recall. "
-            f"The choice can therefore be made using practical factors "
-            f"such as context preservation and storage requirements."
+            f"Both chunking strategies produced the same combined "
+            f"retrieval result. Fixed-size chunking achieved "
+            f"{fixed_precision:.4f} precision and "
+            f"{fixed_recall:.4f} recall, while sentence-based "
+            f"chunking achieved {sentence_precision:.4f} precision "
+            f"and {sentence_recall:.4f} recall. The final choice "
+            f"can therefore be based on implementation simplicity "
+            f"and context-preservation considerations."
         )
 
-    # Print the recommendation generated from the actual measured numbers.
-    print("\nRecommendation:")
-    print(recommendation)
+    # Print the recommendation.
+    print(
+        "\nRecommendation:"
+    )
 
-    # Return every calculated value so the README can use them.
+    print(
+        recommendation
+    )
+
+    # Return all useful Task 5 results.
     return {
         "fixed_precision": fixed_precision,
         "fixed_recall": fixed_recall,
@@ -1175,7 +1747,7 @@ def compare_chunking_strategies(
 
 
 # ============================================================
-# Task 5 - update README
+# TASK 5 - UPDATE README
 # ============================================================
 
 def update_task5_readme(
@@ -1183,173 +1755,186 @@ def update_task5_readme(
     sentence_evaluations,
     summary,
 ):
-    # Use README.md from the current project folder.
-    readme_path = Path("README.md")
+    """
+    Replace or append the generated Task 5 README section.
 
-    # Read the existing README when it exists.
+    Parameters
+    ----------
+    fixed_evaluations : list[dict]
+        Fixed-size evaluation results.
+
+    sentence_evaluations : list[dict]
+        Sentence-based evaluation results.
+
+    summary : dict
+        Comparison summary returned by
+        compare_chunking_strategies().
+
+    Returns
+    -------
+    None
+    """
+
+    # README location.
+    readme_path = Path(
+        "README.md"
+    )
+
+    # Load existing README or create a minimal fallback.
     if readme_path.exists():
 
-        # Load the existing README text.
         existing = readme_path.read_text(
             encoding="utf-8"
         )
 
-    # Create a basic README when it does not exist.
     else:
 
-        # Start with the project title.
-        existing = "# RAG Project\n"
+        existing = (
+            "# Naukri.com Domain Support Agent\n"
+        )
 
-    # Create the beginning of the Task 5 section.
+    # Start Task 5 generated section.
     lines = [
         TASK5_README_START,
         "## Task 5 - Evaluation and Comparison of Chunking Strategies",
         "",
-        "Task 5 evaluates the same five Task 4 queries against "
-        "the two ChromaDB collections separately.",
+        "Task 5 evaluates the same five queries independently "
+        "against the fixed-size and sentence-based collections.",
         "",
-        "Chunk results are mapped to their parent `source` document "
-        "and duplicate parent documents are removed before precision "
-        "and recall are calculated.",
+        "Retrieved chunks are mapped back to their parent source "
+        "documents and duplicate parent documents are removed "
+        "before calculating document-level precision and recall.",
         "",
-        "### Fixed-size chunking results",
+        "### Fixed-size chunking",
         "",
     ]
 
-    # Add the detailed results for every fixed-size query.
+    # Add every fixed-size evaluation.
     for evaluation in fixed_evaluations:
 
-        # Count correctly retrieved documents.
         true_positive_count = len(
             evaluation["true_positives"]
         )
 
-        # Count unique retrieved documents.
         retrieved_count = len(
             evaluation["retrieved_documents"]
         )
 
-        # Count ground-truth documents.
         ground_truth_count = len(
             evaluation["correct_documents"]
         )
 
-        # Add the query heading.
         lines.append(
             f"#### Query: {evaluation['query']}"
         )
 
-        # Add the retrieved unique documents.
         lines.append(
             f"- Retrieved documents: "
             f"`{sorted(evaluation['retrieved_documents'])}`"
         )
 
-        # Add the ground-truth documents.
         lines.append(
             f"- Ground-truth documents: "
             f"`{sorted(evaluation['correct_documents'])}`"
         )
 
-        # Add the precision arithmetic.
         lines.append(
             f"- Precision = "
-            f"{true_positive_count} / {retrieved_count} "
-            f"= {evaluation['precision']:.4f}"
+            f"{true_positive_count} / "
+            f"{retrieved_count} = "
+            f"{evaluation['precision']:.4f}"
         )
 
-        # Add the recall arithmetic.
         lines.append(
             f"- Recall = "
-            f"{true_positive_count} / {ground_truth_count} "
-            f"= {evaluation['recall']:.4f}"
+            f"{true_positive_count} / "
+            f"{ground_truth_count} = "
+            f"{evaluation['recall']:.4f}"
         )
 
-        # Add a blank line after each query.
         lines.append("")
 
-    # Add the sentence-based section.
-    lines.extend([
-        "### Sentence-based chunking results",
-        "",
-    ])
+    # Add sentence-based section.
+    lines.extend(
+        [
+            "### Sentence-based chunking",
+            "",
+        ]
+    )
 
-    # Add the detailed results for every sentence-based query.
+    # Add every sentence-based evaluation.
     for evaluation in sentence_evaluations:
 
-        # Count correctly retrieved documents.
         true_positive_count = len(
             evaluation["true_positives"]
         )
 
-        # Count unique retrieved documents.
         retrieved_count = len(
             evaluation["retrieved_documents"]
         )
 
-        # Count ground-truth documents.
         ground_truth_count = len(
             evaluation["correct_documents"]
         )
 
-        # Add the query heading.
         lines.append(
             f"#### Query: {evaluation['query']}"
         )
 
-        # Add the retrieved unique documents.
         lines.append(
             f"- Retrieved documents: "
             f"`{sorted(evaluation['retrieved_documents'])}`"
         )
 
-        # Add the ground-truth documents.
         lines.append(
             f"- Ground-truth documents: "
             f"`{sorted(evaluation['correct_documents'])}`"
         )
 
-        # Add the precision arithmetic.
         lines.append(
             f"- Precision = "
-            f"{true_positive_count} / {retrieved_count} "
-            f"= {evaluation['precision']:.4f}"
+            f"{true_positive_count} / "
+            f"{retrieved_count} = "
+            f"{evaluation['precision']:.4f}"
         )
 
-        # Add the recall arithmetic.
         lines.append(
             f"- Recall = "
-            f"{true_positive_count} / {ground_truth_count} "
-            f"= {evaluation['recall']:.4f}"
+            f"{true_positive_count} / "
+            f"{ground_truth_count} = "
+            f"{evaluation['recall']:.4f}"
         )
 
-        # Add a blank line after each query.
         lines.append("")
 
-    # Add the overall comparison section.
-    lines.extend([
-        "### Overall comparison",
-        "",
-        "| Collection | Average Precision | Average Recall |",
-        "|---|---:|---:|",
-        f"| fixed_chunks | "
-        f"{summary['fixed_precision']:.4f} | "
-        f"{summary['fixed_recall']:.4f} |",
-        f"| sentence_chunks | "
-        f"{summary['sentence_precision']:.4f} | "
-        f"{summary['sentence_recall']:.4f} |",
-        "",
-        "### Recommendation",
-        "",
-        summary["recommendation"],
-        "",
-        TASK5_README_END,
-    ])
+    # Add final comparison table.
+    lines.extend(
+        [
+            "### Overall comparison",
+            "",
+            "| Collection | Average Precision | Average Recall |",
+            "|---|---:|---:|",
+            f"| fixed_chunks | "
+            f"{summary['fixed_precision']:.4f} | "
+            f"{summary['fixed_recall']:.4f} |",
+            f"| sentence_chunks | "
+            f"{summary['sentence_precision']:.4f} | "
+            f"{summary['sentence_recall']:.4f} |",
+            "",
+            "### Recommendation",
+            "",
+            summary["recommendation"],
+            "",
+            TASK5_README_END,
+        ]
+    )
 
-    # Join all Task 5 lines together.
-    new_block = "\n".join(lines)
+    # Convert the section to one block of Markdown.
+    new_block = "\n".join(
+        lines
+    )
 
-    # Create a pattern that matches only the Task 5 README section.
+    # Match ONLY the marked Task 5 section.
     pattern = re.compile(
         re.escape(TASK5_README_START)
         + r".*?"
@@ -1357,27 +1942,23 @@ def update_task5_readme(
         re.DOTALL,
     )
 
-    # Replace an existing Task 5 block when one already exists.
+    # Replace existing generated Task 5 content.
     if pattern.search(existing):
 
-        # Replace only the first Task 5 block.
         updated = pattern.sub(
             new_block,
             existing,
             count=1,
         )
 
-    # Otherwise append a new Task 5 section.
     else:
 
-        # Select the correct separator.
         separator = (
             "\n"
             if existing.endswith("\n")
             else "\n\n"
         )
 
-        # Append the new Task 5 section.
         updated = (
             existing
             + separator
@@ -1393,356 +1974,394 @@ def update_task5_readme(
 
 
 # ============================================================
-# Output helper
+# OUTPUT HELPER
 # ============================================================
 
-def print_result(result):
-    # Print a separator before the result.
-    print("\n" + "=" * 70)
+def print_result(
+    result,
+):
+    """
+    Print a grounded-generation result in a readable format.
 
-    # Print the query.
-    print("Query:", result["query"])
+    Parameters
+    ----------
+    result : dict
+        Result returned by grounded_generate().
 
-    # Print the selected collection.
-    print("Collection:", result["collection"])
+    Returns
+    -------
+    None
+    """
 
-    # Print the top-1 similarity.
+    # Visual separator.
+    print(
+        "\n"
+        + "=" * 70
+    )
+
+    # Display the query.
+    print(
+        "Query:",
+        result["query"],
+    )
+
+    # Display the production collection.
+    print(
+        "Collection:",
+        result["collection"],
+    )
+
+    # Display top-1 similarity.
     print(
         f"Top-1 cosine similarity: "
         f"{result['similarity']:.4f}"
     )
 
-    # Print whether the result is grounded or a fallback.
-    print("Decision:", result["decision"])
+    # Display grounded/fallback decision.
+    print(
+        "Decision:",
+        result["decision"],
+    )
 
-    # Print the answer.
-    print("Answer:")
-    print(result["answer"])
+    # Display final answer/evidence.
+    print(
+        "Answer:"
+    )
+
+    print(
+        result["answer"]
+    )
 
 
 # ============================================================
-# Main program
+# MAIN PROGRAM
 # ============================================================
 
 def main():
-    # --------------------------------------------------------
-    # Task 3 - load knowledge-base documents
-    # --------------------------------------------------------
+    """
+    Execute the complete Task 3, Task 4 and Task 5 pipeline.
 
-    # Tell the user that the documents are being loaded.
-    print("Loading knowledge-base documents...")
+    The sequence is:
 
-    # Load all TXT documents from the knowledge-base folder.
-    documents = load_documents(KNOWLEDGE_BASE)
+        1. Load documents.
+        2. Build fixed chunks.
+        3. Build sentence chunks.
+        4. Load embeddings.
+        5. Create ChromaDB collections.
+        6. Index both strategies.
+        7. Calibrate threshold using fixed_chunks ONLY.
+        8. Demonstrate grounded generation using fixed_chunks ONLY.
+        9. Demonstrate out-of-scope fallback.
+       10. Evaluate both chunking strategies independently.
+       11. Save Task 4 and Task 5 evidence to README.md.
+    """
 
-    # The problem statement requires at least 12 documents.
+    # ========================================================
+    # TASK 3 - LOAD DOCUMENTS
+    # ========================================================
+
+    print(
+        "Loading knowledge-base documents..."
+    )
+
+    # Load every TXT knowledge-base file.
+    documents = load_documents(
+        KNOWLEDGE_BASE
+    )
+
+    # The capstone requires at least 12 documents.
     if len(documents) < 12:
 
-        # Stop the program when fewer than 12 documents exist.
         raise RuntimeError(
-            f"At least 12 knowledge-base documents are required; "
+            "At least 12 knowledge-base documents are required; "
             f"found {len(documents)}."
         )
 
-    # Print the number of loaded documents.
     print(
         f"Loaded {len(documents)} documents."
     )
 
-    # --------------------------------------------------------
-    # Task 3 - fixed-size chunking
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 3 - FIXED-SIZE CHUNKS
+    # ========================================================
 
-    # Tell the user that fixed-size chunks are being created.
     print(
         "\nCreating fixed-size chunks..."
     )
 
-    # Create fixed-size chunks from every document.
+    # Create the first chunking strategy.
     fixed_chunks = build_chunks(
         documents,
         fixed_size_chunks,
     )
 
-    # Print the total number of fixed-size chunks.
     print(
         f"Fixed-size chunks: "
         f"{len(fixed_chunks)}"
     )
 
-    # --------------------------------------------------------
-    # Task 3 - sentence-based chunking
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 3 - SENTENCE CHUNKS
+    # ========================================================
 
-    # Tell the user that sentence-based chunks are being created.
     print(
         "Creating sentence-based chunks..."
     )
 
-    # Create sentence-based chunks from every document.
+    # Create the second independent chunking strategy.
     sentence_chunks = build_chunks(
         documents,
         sentence_based_chunks,
     )
 
-    # Print the total number of sentence-based chunks.
     print(
         f"Sentence-based chunks: "
         f"{len(sentence_chunks)}"
     )
 
-    # --------------------------------------------------------
-    # Task 3 - load embedding model
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 3 - LOAD EMBEDDING MODEL
+    # ========================================================
 
-    # Tell the user that the local embedding model is loading.
     print(
         "\nLoading embedding model..."
     )
 
-    # Load the required free local SentenceTransformers model.
+    # Load the required local embedding model.
     model = SentenceTransformer(
         MODEL_NAME
     )
 
-    # --------------------------------------------------------
-    # Task 3 - create persistent ChromaDB client
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 3 - CHROMADB CLIENT
+    # ========================================================
 
-    # Create a persistent ChromaDB client.
+    # Create/open persistent ChromaDB storage.
     client = chromadb.PersistentClient(
         path=CHROMA_PATH
     )
 
-    # --------------------------------------------------------
-    # Task 3 - create two separate collections
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 3 - PREPARE BOTH COLLECTIONS
+    # ========================================================
 
-    # Create or prepare the fixed-size chunk collection.
+    # Prepare fixed-size collection.
     fixed_collection = prepare_collection(
         client,
         "fixed_chunks",
     )
 
-    # Create or prepare the sentence-based chunk collection.
+    # Prepare sentence-based collection.
     sentence_collection = prepare_collection(
         client,
         "sentence_chunks",
     )
 
-    # --------------------------------------------------------
-    # Task 3 - store fixed-size chunks
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 3 - INDEX FIXED CHUNKS
+    # ========================================================
 
-    # Tell the user that fixed-size chunks are being stored.
     print(
         "\nStoring fixed-size chunks..."
     )
 
-    # Store fixed-size chunks and their embeddings.
     store_chunks(
         fixed_collection,
         fixed_chunks,
         model,
     )
 
-    # --------------------------------------------------------
-    # Task 3 - store sentence-based chunks
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 3 - INDEX SENTENCE CHUNKS
+    # ========================================================
 
-    # Tell the user that sentence chunks are being stored.
     print(
         "Storing sentence-based chunks..."
     )
 
-    # Store sentence-based chunks and their embeddings.
     store_chunks(
         sentence_collection,
         sentence_chunks,
         model,
     )
 
-    # Print the number of records in the first collection.
+    # Display final vector counts.
     print(
         f"fixed_chunks collection: "
         f"{fixed_collection.count()} records"
     )
 
-    # Print the number of records in the second collection.
     print(
         f"sentence_chunks collection: "
         f"{sentence_collection.count()} records"
     )
 
-    # --------------------------------------------------------
-    # Task 4 - measure in-scope questions
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 4 - FIXED-ONLY CALIBRATION
+    # ========================================================
 
-    # Tell the user that in-scope calibration is starting.
     print(
-        "\nMeasuring in-scope calibration queries..."
+        "\n"
+        "============================================================"
     )
 
-    # Measure the in-scope queries.
-    in_scope = measure_queries(
+    print(
+        "TASK 4 - PRODUCTION FIXED-CHUNKS CALIBRATION"
+    )
+
+    print(
+        "============================================================"
+    )
+
+    print(
+        "\nMeasuring in-scope calibration queries "
+        "on fixed_chunks..."
+    )
+
+    # IMPORTANT:
+    # Calibration now uses ONLY the production fixed collection.
+    in_scope = measure_fixed_collection_queries(
         IN_SCOPE_QUERIES,
         model,
         fixed_collection,
-        sentence_collection,
     )
 
-    # --------------------------------------------------------
-    # Task 4 - measure out-of-scope questions
-    # --------------------------------------------------------
-
-    # Tell the user that out-of-scope calibration is starting.
     print(
-        "Measuring out-of-scope calibration queries..."
+        "Measuring out-of-scope calibration queries "
+        "on fixed_chunks..."
     )
 
-    # Measure the out-of-scope queries.
-    out_of_scope = measure_queries(
+    # IMPORTANT:
+    # Out-of-scope calibration also uses ONLY fixed_chunks.
+    out_of_scope = measure_fixed_collection_queries(
         OUT_OF_SCOPE_QUERIES,
         model,
         fixed_collection,
-        sentence_collection,
     )
 
-    # --------------------------------------------------------
-    # Task 4 - calculate threshold
-    # --------------------------------------------------------
-
-    # Calculate the threshold from the measured values.
+    # Calculate the empirical threshold.
     threshold = choose_threshold(
         in_scope,
         out_of_scope,
     )
 
-    # --------------------------------------------------------
-    # Task 4 - print calibration results
-    # --------------------------------------------------------
+    # ========================================================
+    # PRINT CALIBRATION RESULTS
+    # ========================================================
 
-    # Print the in-scope measurements.
     print(
         "\nIN-SCOPE CALIBRATION"
     )
 
-    # Print every in-scope measurement.
     for item in in_scope:
 
-        # Display similarity, collection, and query.
         print(
             f"{item['similarity']:.4f} | "
             f"{item['collection']} | "
             f"{item['query']}"
         )
 
-    # Print the out-of-scope measurements.
     print(
         "\nOUT-OF-SCOPE CALIBRATION"
     )
 
-    # Print every out-of-scope measurement.
     for item in out_of_scope:
 
-        # Display similarity, collection, and query.
         print(
             f"{item['similarity']:.4f} | "
             f"{item['collection']} | "
             f"{item['query']}"
         )
 
-    # Print the chosen threshold.
+    # Print the actual threshold produced by this execution.
     print(
         f"\nChosen threshold: "
         f"{threshold:.4f}"
     )
 
-    # --------------------------------------------------------
-    # Task 4 - update README
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 4 - README UPDATE
+    # ========================================================
 
-    # Save Task 4 calibration information in README.md.
     update_readme(
         in_scope,
         out_of_scope,
         threshold,
     )
 
-    # --------------------------------------------------------
-    # Task 4 - grounded generation demonstration
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 4 - GROUNDED GENERATION DEMONSTRATION
+    # ========================================================
 
-    # Tell the user that grounded generation is starting.
     print(
         "\nGROUNDED GENERATION DEMONSTRATION"
     )
 
-    # Use the first five in-scope queries exactly as in the
-    # original Task 4 demonstration.
+    # Demonstrate at least five in-scope questions.
     for query in IN_SCOPE_QUERIES[:5]:
 
-        # Generate a grounded answer.
+        # IMPORTANT:
+        # The production grounded-generation path now uses
+        # fixed_chunks only.
         result = grounded_generate(
             query,
             model,
             fixed_collection,
-            sentence_collection,
             threshold,
             TOP_K,
         )
 
-        # Print the generated result.
-        print_result(result)
+        print_result(
+            result
+        )
 
-    # --------------------------------------------------------
-    # Task 4 - fallback demonstration
-    # --------------------------------------------------------
+    # ========================================================
+    # TASK 4 - OUT-OF-SCOPE FALLBACK
+    # ========================================================
 
-    # Select the lowest-scoring out-of-scope query.
-    fallback_query = min(
-        out_of_scope,
-        key=lambda item: item["similarity"],
-    )["query"]
-
-    # Tell the user that the fallback demonstration is starting.
     print(
         "\nOUT-OF-SCOPE FALLBACK DEMONSTRATION"
     )
 
-    # Run grounded generation for the fallback query.
+    # Select the strongest out-of-scope query so the test is
+    # deliberately conservative.
+    fallback_query = max(
+        out_of_scope,
+        key=lambda item: item["similarity"],
+    )["query"]
+
+    # Run the fixed-only grounded-generation path.
     fallback_result = grounded_generate(
         fallback_query,
         model,
         fixed_collection,
-        sentence_collection,
         threshold,
         TOP_K,
     )
 
-    # Print the fallback result.
-    print_result(fallback_result)
+    print_result(
+        fallback_result
+    )
 
-    # Make sure the selected out-of-scope query triggers fallback.
+    # This explicit assertion proves that the out-of-scope test
+    # actually triggered the required fallback.
     if fallback_result["decision"] != "FALLBACK":
 
-        # Stop the program when the expected fallback does not happen.
         raise RuntimeError(
             "The selected out-of-scope query did not trigger "
-            "the fallback. Review the measured scores and threshold."
+            "the grounded fallback. Review the calibration "
+            "measurements and threshold."
         )
 
     # ========================================================
-    # Task 5 - evaluate fixed-size chunking
+    # TASK 5 - FIXED COLLECTION
     # ========================================================
 
-    # Print a clear heading for fixed-size evaluation.
     print(
         "\n\nTASK 5 - FIXED-SIZE CHUNKING EVALUATION"
     )
 
-    # Evaluate the same five Task 4 queries independently
-    # against the fixed-size collection.
+    # Evaluate all five Task 5 queries independently.
     fixed_evaluations = evaluate_collection(
         TASK5_QUERIES,
         fixed_collection,
@@ -1751,16 +2370,14 @@ def main():
     )
 
     # ========================================================
-    # Task 5 - evaluate sentence-based chunking
+    # TASK 5 - SENTENCE COLLECTION
     # ========================================================
 
-    # Print a clear heading for sentence-based evaluation.
     print(
         "\n\nTASK 5 - SENTENCE-BASED CHUNKING EVALUATION"
     )
 
-    # Evaluate the exact same five queries independently
-    # against the sentence-based collection.
+    # Evaluate the same five queries against the second collection.
     sentence_evaluations = evaluate_collection(
         TASK5_QUERIES,
         sentence_collection,
@@ -1769,52 +2386,46 @@ def main():
     )
 
     # ========================================================
-    # Task 5 - compare both strategies
+    # TASK 5 - COMPARE BOTH
     # ========================================================
 
-    # Compare average precision and recall from both strategies.
     task5_summary = compare_chunking_strategies(
         fixed_evaluations,
         sentence_evaluations,
     )
 
     # ========================================================
-    # Task 5 - save results to README
+    # TASK 5 - SAVE README EVIDENCE
     # ========================================================
 
-    # Save the detailed Task 5 results and recommendation.
     update_task5_readme(
         fixed_evaluations,
         sentence_evaluations,
         task5_summary,
     )
 
-    # --------------------------------------------------------
-    # Final completion message
-    # --------------------------------------------------------
+    # ========================================================
+    # FINAL STATUS
+    # ========================================================
 
-    # Print a final message confirming Task 4 and Task 5.
     print(
-        "\nTask 4 and Task 5 completed successfully."
+        "\n"
+        "Task 3, Task 4 and Task 5 completed successfully."
     )
 
-    # Tell the user that calibration information was saved.
     print(
-        "Task 4 calibration results were saved to README.md."
-    )
-
-    # Tell the user that Task 5 evaluation was also saved.
-    print(
-        "Task 5 precision and recall results were saved to README.md."
+        "Task 4 calibration and Task 5 evaluation results "
+        "were written to README.md."
     )
 
 
 # ============================================================
-# Program entry point
+# PYTHON ENTRY POINT
 # ============================================================
 
-# Run main() only when this Python file is executed directly.
+# This condition ensures main() runs only when the file itself
+# is executed directly, not when another module imports rag_core.
 if __name__ == "__main__":
 
-    # Start the complete Task 3, Task 4, and Task 5 pipeline.
+    # Execute the complete Part 1 pipeline.
     main()

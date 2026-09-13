@@ -2,350 +2,454 @@
 
 **Track Completed: Naukri.com (Recruitment & HR)**
 
-An AI-powered domain support agent for **Recruitment & HR** that combines Retrieval-Augmented Generation (RAG), CrewAI multi-agent orchestration, FastAPI deployment, session memory, guardrails, AutoGen governance review, evaluation, and response caching.
+An AI-powered **Recruitment & HR domain support agent** that combines:
 
-This project was built as a final capstone to demonstrate a complete grounded-generation workflow rather than only a chatbot. The system retrieves information from a controlled HR knowledge base, performs application-status lookups through a dedicated tool, applies safety controls, exposes the workflow through an API, evaluates the responses, and adds governance controls around agent autonomy and runtime usage.
+* Retrieval-Augmented Generation (RAG)
+* Local SentenceTransformers embeddings
+* ChromaDB vector retrieval
+* CrewAI multi-agent orchestration
+* Session-based memory
+* Pydantic structured outputs
+* Input and output guardrails
+* FastAPI deployment
+* WebSocket real-time chat
+* Structured JSONL logging
+* AutoGen governance review
+* Runtime token and cost controls
+* Normalized-query response caching
+* Deterministic `MOCK_LLM` execution
 
----
+This repository implements the complete Final Capstone across **Tasks 1–16** in one public GitHub repository.
 
-## Table of Contents
+The system is designed as a grounded Recruitment & HR support agent rather than a generic chatbot:
 
-* [Project Overview](#project-overview)
-* [Problem Statement](#problem-statement)
-* [Objectives](#objectives)
-* [Architecture](#architecture)
-* [Technology Stack](#technology-stack)
-* [Repository Structure](#repository-structure)
-* [Part 1 - Knowledge Base, RAG and Evaluation](#part-1---knowledge-base-rag-and-evaluation)
-
-  * [1. Dataset Generation](#1-dataset-generation)
-  * [2. Knowledge Base](#2-knowledge-base)
-  * [3. Chunking Strategies](#3-chunking-strategies)
-  * [4. Embeddings and ChromaDB](#4-embeddings-and-chromadb)
-  * [5. Grounded Generation](#5-grounded-generation)
-  * [6. Threshold Calibration](#6-threshold-calibration)
-  * [7. Chunking Evaluation](#7-chunking-evaluation)
-* [Part 2 - CrewAI Agent System](#part-2---crewai-agent-system)
-
-  * [1. Agents](#1-agents)
-  * [2. Tools](#2-tools)
-  * [3. Sequential Workflow](#3-sequential-workflow)
-  * [4. Session Memory](#4-session-memory)
-  * [5. Structured Output](#5-structured-output)
-  * [6. Guardrails](#6-guardrails)
-* [Part 3 - API, Logging and Evaluation](#part-3---api-logging-and-evaluation)
-
-  * [1. FastAPI](#1-fastapi)
-  * [2. Endpoints](#2-endpoints)
-  * [3. JSONL Logging](#3-jsonl-logging)
-  * [4. Task 13 Evaluation](#4-task-13-evaluation)
-* [Part 4 - Governance and Optimization](#part-4---governance-and-optimization)
-
-  * [1. AutoGen Review](#1-autogen-review)
-  * [2. Least Autonomy](#2-least-autonomy)
-  * [3. Risk Classification](#3-risk-classification)
-  * [4. Runtime Token and Cost Budget](#4-runtime-token-and-cost-budget)
-  * [5. Response Caching](#5-response-caching)
-* [Key Design Choices](#key-design-choices)
-* [How to Run](#how-to-run)
-* [Demonstration and Evidence](#demonstration-and-evidence)
-* [Acceptance Criteria Checklist](#acceptance-criteria-checklist)
-* [Design Summary by Task](#design-summary-by-task)
-* [Key Results](#key-results)
-* [Reproducibility Notes](#reproducibility-notes)
-* [Limitations](#limitations)
-* [Conclusion](#conclusion)
-* [Main Files](#main-files)
-* [Project Status](#project-status)
+* HR policy questions are answered from a controlled knowledge base.
+* Application-status questions are answered through a dedicated structured lookup tool.
+* Unsupported knowledge-base questions trigger a grounded fallback.
+* Privileged application lookup is restricted to the designated Lookup Agent.
+* Session memory supports same-session follow-up questions without leaking context into a fresh session.
+* Repeated grounded-generation requests can be served from an in-memory normalized-query cache.
+* CrewAI responses are validated through a Pydantic schema.
+* AutoGen provides an independent policy-compliance review stage.
+* Runtime governance controls token and synthetic cost limits.
 
 ---
 
-# Project Overview
+# Table of Contents
 
-The **Naukri.com Domain Support Agent** is designed for common Recruitment and HR support scenarios such as:
+* [1. Project Overview](#1-project-overview)
+* [2. Capstone Scope](#2-capstone-scope)
+* [3. Objectives](#3-objectives)
+* [4. Architecture](#4-architecture)
+* [5. Technology Stack](#5-technology-stack)
+* [6. Repository Structure](#6-repository-structure)
+* [7. Part 1 - Dataset, Knowledge Base and RAG](#7-part-1---dataset-knowledge-base-and-rag)
 
-* job eligibility questions
-* interview scheduling questions
-* offer negotiation
-* background verification
-* notice periods
-* employee referral bonus
-* internal transfer
-* probation
-* remote-work eligibility
-* diversity hiring
-* exit interviews
-* applicant-data retention
-* job-application status lookup
+  * [7.1 Task 1 - Dataset Generation](#71-task-1---dataset-generation)
+  * [7.2 Task 2 - Knowledge Base](#72-task-2---knowledge-base)
+  * [7.3 Task 3 - Chunking Strategies](#73-task-3---chunking-strategies)
+  * [7.4 Task 3 - Embeddings and ChromaDB](#74-task-3---embeddings-and-chromadb)
+  * [7.5 Task 4 - Grounded Generation](#75-task-4---grounded-generation)
+  * [7.6 Task 4 - Empirical Threshold Calibration](#76-task-4---empirical-threshold-calibration)
+  * [7.7 Task 5 - Precision and Recall Evaluation](#77-task-5---precision-and-recall-evaluation)
+* [8. Part 2 - CrewAI Agent System](#8-part-2---crewai-agent-system)
 
-The system is intentionally designed so that knowledge-base questions are answered from retrieved documents instead of allowing the model to invent unsupported HR policies.
+  * [8.1 Task 6 - Application Lookup and Escalation Score](#81-task-6---application-lookup-and-escalation-score)
+  * [8.2 Task 7 - CrewAI Agents](#82-task-7---crewai-agents)
+  * [8.3 Task 8 - Session Memory](#83-task-8---session-memory)
+  * [8.4 Task 9 - Structured Output](#84-task-9---structured-output)
+  * [8.5 Task 10 - Guardrails](#85-task-10---guardrails)
+* [9. Part 3 - FastAPI, Logging and Evaluation](#9-part-3---fastapi-logging-and-evaluation)
 
-Application-status information is handled separately through a dedicated lookup tool.
+  * [9.1 Task 11 - FastAPI Deployment](#91-task-11---fastapi-deployment)
+  * [9.2 Task 12 - Structured JSONL Logging](#92-task-12---structured-jsonl-logging)
+  * [9.3 Task 13 - End-to-End Evaluation](#93-task-13---end-to-end-evaluation)
+* [10. Part 4 - Governance and Optimization](#10-part-4---governance-and-optimization)
 
-The overall design is:
+  * [10.1 Task 14 - AutoGen Review](#101-task-14---autogen-review)
+  * [10.2 Task 15 - AI Governance](#102-task-15---ai-governance)
+  * [10.3 Task 16 - Response Caching](#103-task-16---response-caching)
+* [11. Key Design Decisions](#11-key-design-decisions)
+* [12. How to Run](#12-how-to-run)
+* [13. Demonstration and Evidence](#13-demonstration-and-evidence)
+* [14. Acceptance Criteria Checklist](#14-acceptance-criteria-checklist)
+* [15. Design Summary by Task](#15-design-summary-by-task)
+* [16. Key Results](#16-key-results)
+* [17. Reproducibility Notes](#17-reproducibility-notes)
+* [18. Limitations](#18-limitations)
+* [19. Conclusion](#19-conclusion)
+* [20. Main Files](#20-main-files)
+* [21. Final Project Status](#21-final-project-status)
+
+---
+
+# 1. Project Overview
+
+The **Naukri.com Domain Support Agent** is a Recruitment & HR support system designed to answer questions across controlled HR policy content and structured job-application information.
+
+Supported knowledge-base topics include:
+
+* Job-application eligibility
+* Interview scheduling
+* Offer negotiation
+* Background verification
+* Notice period
+* Referral bonus
+* Internal transfer
+* Probation period
+* Remote work
+* Diversity hiring
+* Exit interview
+* Applicant-data retention
+
+The system also supports:
+
+* Job-application status lookup
+* Expected salary lookup
+* Application escalation scoring
+* Same-session follow-up questions
+* PII masking
+* Prompt-injection blocking
+* Groundedness fallback
+* API access
+* WebSocket chat
+* Structured audit logging
+* Governance review
+* Runtime token and cost limits
+* RAG response caching
+
+The architecture intentionally separates **policy evidence** from **application records**.
+
+## Knowledge-base questions
+
+Knowledge-base questions use the RAG path:
 
 ```text
-User
-  |
-  v
-FastAPI
-  |
-  v
+User Query
+    |
+    v
 Input Guardrails
-  |
-  v
-CrewAI Sequential Crew
-  |
-  +----------------------+----------------------+
-  |                      |                      |
-  v                      v                      v
-Retrieval Agent     Lookup Agent        Response Composer
-  |                      |                      ^
-  v                      v                      |
-Cached RAG Search   Application Lookup          |
-  |                      |                      |
-  +----------+-----------+----------------------+
-             |
-             v
-    Structured CrewResponse
-             |
-             v
-       FastAPI Response
-             |
-             v
-      JSONL Request Log
+    |
+    v
+CrewAI Retrieval Agent
+    |
+    v
+rag_search()
+    |
+    v
+Normalized Query Cache
+    |
+    +----------------------+
+    |                      |
+    v                      v
+Cache Hit              Cache Miss
+    |                      |
+    v                      v
+Cached Result        Real RAG Search
+                           |
+                           v
+                  SentenceTransformers
+                           |
+                           v
+                        ChromaDB
+                           |
+                           v
+                    HR Knowledge Base
+                           |
+                           v
+                  Top-1 Similarity
+                           |
+                           v
+                 Grounded / Fallback
 ```
 
-The Task 16 response cache is integrated into the live CrewAI RAG path. The `rag_search()` tool routes grounded-generation requests through `response_cache.py`, while the underlying `_real_rag_search()` function performs the actual RAG execution on cache misses.
+## Application-status questions
+
+Application-specific questions use a separate structured path:
+
+```text
+User Query
+    |
+    v
+Input Guardrails
+    |
+    v
+CrewAI Lookup Agent
+    |
+    v
+check_job_application_status(record_id)
+    |
+    v
+job_applications.csv
+    |
+    v
+Structured Application Facts
+```
+
+This separation is deliberate.
+
+The RAG path uses semantic retrieval and the empirically calibrated `RAG_THRESHOLD`.
+
+The application-status path uses structured application facts directly from the generated dataset and therefore does not rely on Chroma similarity.
 
 ---
 
-# Problem Statement
+# 2. Capstone Scope
 
-The capstone requires building a domain-specific support agent for Recruitment & HR while addressing practical problems that appear in real agentic systems:
+This repository implements all four parts of the supplied Final Capstone problem statement.
 
-1. The system must answer domain questions from a controlled knowledge base.
-2. The retrieval process must be evaluated rather than assumed to be correct.
-3. The system must distinguish supported questions from unrelated questions.
-4. Application-status information must come from a structured application dataset.
-5. Agents must have controlled access to tools.
-6. Conversation context should be retained where required.
-7. Inputs and outputs require guardrails.
-8. The application should be exposed through an API.
-9. Requests should produce auditable structured logs.
-10. Final responses should be evaluated using explicit metrics.
-11. An additional governance/review stage should validate generated responses.
-12. Runtime token and cost usage should be controlled.
-13. Repeated grounded-generation requests should avoid unnecessary repeated work.
+| Part   | Scope                                                                                              |
+| ------ | -------------------------------------------------------------------------------------------------- |
+| Part 1 | Dataset design, knowledge base, embeddings, ChromaDB, RAG, threshold calibration, precision/recall |
+| Part 2 | CrewAI agents, tools, memory, structured output, guardrails                                        |
+| Part 3 | FastAPI, WebSocket, JSONL logging, 15-query evaluation                                             |
+| Part 4 | AutoGen review, least autonomy, risk classification, runtime budgets, response caching             |
 
-This repository implements these requirements across **Tasks 1-16**.
+The project is designed to operate under the required deterministic `MOCK_LLM` workflow.
+
+No paid LLM API account is required for the graded local workflow.
 
 ---
 
-# Objectives
+# 3. Objectives
 
-The main objectives of this project are:
+The project objectives are to:
 
-* Build a reproducible synthetic job-application dataset.
-* Create a controlled HR knowledge base.
-* Compare multiple chunking strategies.
-* Use local embeddings and ChromaDB for retrieval.
-* Calibrate a groundedness threshold from measured data.
-* Build a three-agent CrewAI workflow.
-* Add application lookup and session memory.
-* Validate responses with Pydantic.
-* Add input and output guardrails.
-* Deploy the workflow through FastAPI.
-* Add JSONL request logging.
-* Build a 15-query evaluation harness.
-* Add AutoGen governance review.
-* Apply least-autonomy and runtime-budget controls.
-* Add a normalized-query response caching demonstration.
+1. Build a deterministic synthetic job-application dataset.
+2. Cover all required Recruitment & HR knowledge-base topics.
+3. Compare fixed-size and sentence-based RAG chunking strategies.
+4. Generate local embeddings and store them in ChromaDB.
+5. Calibrate a groundedness threshold empirically.
+6. Build a three-agent CrewAI workflow.
+7. Separate retrieval and application-lookup responsibilities.
+8. Maintain session memory within the running process.
+9. Validate CrewAI responses using Pydantic.
+10. Apply input and output guardrails.
+11. Expose the workflow through FastAPI.
+12. Support WebSocket-based multi-turn chat.
+13. Produce structured JSONL audit records.
+14. Evaluate exactly 15 queries using Accuracy, Grounding, Completeness and Safety.
+15. Add an independent AutoGen policy/compliance review stage.
+16. Enforce least-autonomy and runtime-budget controls.
+17. Avoid redundant grounded-generation work through response caching.
 
 ---
 
-# Architecture
+# 4. Architecture
 
-## End-to-end Architecture
+## End-to-End Architecture
 
 ```mermaid
 flowchart TD
-    U[User] --> API[FastAPI API]
-    API --> IG[Input Guardrails]
-    IG -->|Allowed request| CREW[CrewAI Sequential Crew]
 
-    CREW --> RA[Retrieval Agent]
-    CREW --> LA[Lookup Agent]
-    CREW --> CA[HR Response Composer]
+    U[User]
+        --> API[FastAPI]
 
-    RA --> RAG[Cached RAG Search]
-    RAG --> CACHE[Task 16 Response Cache]
+    API
+        --> IG[Input Guardrails]
 
-    CACHE -->|Cache Miss| REAL[Real RAG Search]
-    CACHE -->|Cache Hit| CACHED[Cached RAG Result]
+    IG
+        -->|Allowed| CREW[CrewAI Sequential Crew]
 
-    REAL --> EMB[SentenceTransformers Embeddings]
-    EMB --> CHROMA[(ChromaDB)]
-    CHROMA --> KB[HR Knowledge Base]
+    IG
+        -->|Blocked| BLOCK[Blocked Response]
 
-    LA --> LOOKUP[check_job_application_status]
-    LOOKUP --> CSV[(job_applications.csv)]
+    CREW
+        --> RA[Retrieval Agent]
 
-    RA --> CA
-    LA --> CA
+    CREW
+        --> LA[Lookup Agent]
 
-    CA --> DEC{Response Source?}
+    CREW
+        --> CA[HR Response Composer]
 
-    DEC -->|RAG-backed answer| OG[Output Groundedness Guardrail]
-    OG --> RESP[Structured CrewResponse]
+    RA
+        --> RAG[rag_search]
 
-    DEC -->|Application lookup answer| RESP
+    RAG
+        --> CACHE[Response Cache]
 
-    RESP --> API
-    API --> LOG[JSONL Request Logger]
+    CACHE
+        -->|Hit| CACHED[Cached RAG Result]
 
-    CA -. Task 14 review .-> AG[AutoGen Governance Review]
-    AG --> REVIEW[Policy Compliance Reviewer]
-    REVIEW --> EDITOR[Final Editor]
-    EDITOR --> VERDICT[Structured Verdict]
+    CACHE
+        -->|Miss| REAL[Real RAG Search]
+
+    REAL
+        --> EMB[SentenceTransformers]
+
+    EMB
+        --> CHROMA[(ChromaDB)]
+
+    CHROMA
+        --> KB[HR Knowledge Base]
+
+    LA
+        --> LOOKUP[check_job_application_status]
+
+    LOOKUP
+        --> CSV[(job_applications.csv)]
+
+    RA
+        --> CA
+
+    LA
+        --> CA
+
+    CA
+        --> TYPE{Response Type}
+
+    TYPE
+        -->|RAG-backed| GROUND[Output Groundedness Check]
+
+    TYPE
+        -->|Lookup-backed| STRUCT[Structured Application Result]
+
+    GROUND
+        --> STRUCT
+
+    STRUCT
+        --> PYD[Pydantic CrewResponse]
+
+    PYD
+        --> API
+
+    API
+        --> LOG[JSONL Request Logger]
+
+    CA
+        -. optional Task 14 review .->
+        AG[AutoGen Review]
+
+    AG
+        --> REVIEW[Policy Compliance Reviewer]
+
+    REVIEW
+        --> EDITOR[Final Editor]
+
+    EDITOR
+        --> VERDICT[Structured Verdict]
+
+    GOVERN[Governance Controls]
+        -.-> CREW
+
+    GOVERN
+        -.-> API
 ```
 
-The architecture separates the two evidence paths used by the system.
-
-### RAG-backed knowledge-base path
+## Core RAG Response Path
 
 ```text
-RAG-backed knowledge-base question
-            |
-            v
-      Retrieval Agent
-            |
-            v
-     Cached RAG Search
-            |
-      +-----+-----+
-      |           |
-      v           v
-  Cache Hit   Cache Miss
-      |           |
-      v           v
-Cached Result  Real RAG Search
-                  |
-                  v
-        SentenceTransformers
-                  |
-                  v
-              ChromaDB
-                  |
-                  v
-        HR Knowledge Base
+Question
+    |
+    v
+Input Guardrails
+    |
+    v
+Retrieval Agent
+    |
+    v
+rag_search(query)
+    |
+    v
+Normalized Query Cache
+    |
+    +------------------------------+
+    |                              |
+    v                              v
+Cache Hit                      Cache Miss
+    |                              |
+    v                              v
+Cached Result                _real_rag_search()
+                                   |
+                                   v
+                          Embedding Generation
+                                   |
+                                   v
+                                ChromaDB
+                                   |
+                                   v
+                               Top-K Chunks
+                                   |
+                                   v
+                           Top-1 Similarity
+                                   |
+                                   v
+                          Grounded / Fallback
 ```
 
-### Application-status lookup path
+## Application Lookup Path
 
 ```text
-Application-status question
-            |
-            v
-        Lookup Agent
-            |
-            v
-check_job_application_status(record_id)
-            |
-            v
-    job_applications.csv
-            |
-            v
-Structured application facts
+Question with Record ID
+        |
+        v
+Input Guardrails
+        |
+        v
+Lookup Agent
+        |
+        v
+check_job_application_status()
+        |
+        v
+job_applications.csv
+        |
+        v
+Status + Expected Salary + Escalation Score
 ```
 
-### Response composition path
+## Governance Path
 
 ```text
-RAG result ------------------+
-                             |
-                             v
-                       Response Composer
-                             ^
-                             |
-Application lookup result ---+
-                             |
-                             v
-                    Structured CrewResponse
-                             |
-                             v
-                         FastAPI
-                             |
-                             v
-                      JSONL Request Log
-```
-
-### Governance review path
-
-```text
-CrewAI Composer Draft
-         |
-         v
+CrewAI Draft
+    |
+    v
 Policy-Compliance-Reviewer
-         |
-         v
+    |
+    v
 Final-Editor
-         |
-         v
-Structured Verdict
+    |
+    v
+Pydantic Verdict
 ```
 
-The Task 16 response cache is part of the **live CrewAI RAG path**. The `rag_search()` tool checks the normalized-query cache before executing `_real_rag_search()`. A cache hit returns the stored grounded-generation result without repeating the real RAG execution. A cache miss runs the actual RAG pipeline and stores the result.
+---
 
-Application-status lookup remains intentionally uncached because application information can change.
+# 5. Technology Stack
 
-## Component Flow
+| Technology                               | Purpose                                |
+| ---------------------------------------- | -------------------------------------- |
+| Python                                   | Main implementation language           |
+| SentenceTransformers                     | Local embedding generation             |
+| `sentence-transformers/all-MiniLM-L6-v2` | Embedding model                        |
+| ChromaDB                                 | Local vector database                  |
+| CrewAI                                   | Multi-agent orchestration              |
+| LangChain Core                           | Session memory integration             |
+| Pydantic                                 | Structured request/response validation |
+| FastAPI                                  | HTTP API                               |
+| WebSockets                               | Real-time chat                         |
+| AutoGen AgentChat                        | Independent governance review          |
+| CSV                                      | Synthetic application records          |
+| JSONL                                    | Structured request logging             |
+| In-memory cache                          | RAG response caching                   |
+| `python-dotenv`                          | Environment configuration support      |
 
-1. User sends an HR question.
-2. FastAPI receives the request.
-3. Input guardrails mask phone PII and detect obvious prompt injection.
-4. Allowed requests reach the CrewAI sequential workflow.
-5. The Retrieval Agent handles knowledge-base questions.
-6. The Lookup Agent handles application-status questions.
-7. For RAG-backed requests, the live `rag_search()` tool checks the normalized-query response cache.
-8. On a cache hit, the stored grounded-generation result is returned without repeating the real RAG execution.
-9. On a cache miss, `_real_rag_search()` performs embedding generation, ChromaDB retrieval, and groundedness evaluation.
-10. The Lookup Agent reads structured application information through `check_job_application_status()`.
-11. The Response Composer combines only information returned by the preceding agents.
-12. RAG-backed answers are checked against the calibrated groundedness threshold.
-13. Application-status answers follow the structured lookup evidence path and therefore do not use the RAG similarity-based groundedness check.
-14. The final response is validated using the `CrewResponse` Pydantic model.
-15. FastAPI returns the structured result.
-16. The request is recorded in JSONL format with a trace ID and timing information.
-17. Task 14 can review the CrewAI draft and produce a structured governance verdict.
-18. Task 15 enforces least-autonomy, risk, token, and synthetic-cost controls.
-19. Task 16 avoids duplicate grounded-generation work for repeated normalized queries.
+The validated CrewAI version is:
+
+```text
+crewai==1.15.18
+```
+
+The dependency definition is stored in:
+
+```text
+requirements.txt
+```
 
 ---
 
-# Technology Stack
-
-| Technology             | Purpose                             |
-| ---------------------- | ----------------------------------- |
-| Python                 | Main implementation language        |
-| ChromaDB               | Local vector database               |
-| SentenceTransformers   | Local embedding generation          |
-| `all-MiniLM-L6-v2`     | Embedding model                     |
-| CrewAI                 | Multi-agent orchestration           |
-| LangChain Core         | Session memory/runnable integration |
-| Pydantic               | Structured validation               |
-| FastAPI                | HTTP API                            |
-| WebSockets             | Real-time chat endpoint             |
-| AutoGen AgentChat      | Governance/review stage             |
-| CSV                    | Synthetic application dataset       |
-| JSONL                  | Request logging                     |
-| In-memory dictionaries | Session state and response cache    |
-
-Dependencies are listed in [`requirements.txt`](requirements.txt).
-
----
-
-# Repository Structure
+# 6. Repository Structure
 
 ```text
 naukri-domain-support-agent/
@@ -373,12 +477,13 @@ naukri-domain-support-agent/
 ├── crew_agents.py
 ├── task6_tool.py
 ├── guardrails.py
+├── task_10.py
 ├── api.py
 ├── request_logger.py
-│
 ├── autogen_review.py
 ├── governance.py
 ├── response_cache.py
+├── test_websocket.py
 │
 ├── eval/
 │   ├── task13_judge_eval.py
@@ -388,33 +493,20 @@ naukri-domain-support-agent/
 ├── logs/
 │   └── requests.jsonl
 │
-├── test_websocket.py
-├── task_10.py
 ├── requirements.txt
+├── .gitignore
 └── README.md
 ```
 
-### Repository file roles
-
-`task_10.py` is retained as the Task 10 demonstration/runner file, while the reusable guardrail implementation itself is maintained in `guardrails.py`.
-
-The implementation used by the FastAPI and CrewAI workflow is therefore:
-
-```text
-guardrails.py
-```
-
-`task_10.py` provides the executable demonstration entry point for Task 10.
-
 ---
 
-# Part 1 - Knowledge Base, RAG and Evaluation
+# 7. Part 1 - Dataset, Knowledge Base and RAG
 
-## 1. Dataset Generation
+## 7.1 Task 1 - Dataset Generation
 
-`dataset.py` creates a deterministic synthetic application dataset.
+`dataset.py` generates a deterministic synthetic job-application dataset.
 
-### Configuration
+### Dataset configuration
 
 ```python
 SEED = 42
@@ -422,27 +514,43 @@ NUM_RECORDS = 50
 OUTPUT_FILE = "job_applications.csv"
 ```
 
-The dataset covers these categories:
+The generated dataset contains:
 
-* Software Engineer
-* Data Analyst
-* Product Manager
-* HR Executive
-* Sales Associate
+```text
+50 job-application records
+```
 
-The supported statuses are:
+This exceeds the capstone minimum of 40 records.
 
-* Applied
-* Screening
-* Interview Scheduled
-* Offered
-* Rejected
+### Required categories
 
-Equal weights are used for all categories and statuses so that the synthetic dataset provides balanced and reproducible representation across the required job categories and application outcomes.
+The dataset contains all five required categories:
 
-The generated records contain both the required application-status fields and additional realistic candidate fields.
+```text
+Software Engineer
+Data Analyst
+Product Manager
+HR Executive
+Sales Associate
+```
 
-### Required Fields
+Each required category appears at least three times.
+
+### Required statuses
+
+All five required statuses are represented:
+
+```text
+Applied
+Screening
+Interview Scheduled
+Offered
+Rejected
+```
+
+### Required record fields
+
+Every record includes:
 
 ```text
 record_id
@@ -453,320 +561,495 @@ days_since_created
 flagged_priority_review
 ```
 
-Additional fields include:
+The dataset also contains additional fabricated candidate information for application lookup demonstrations.
+
+### Salary range
+
+The selected synthetic salary range is:
 
 ```text
-candidate_name
-experience
-skills
-notice_period
-education
-location
+₹4,00,000 - ₹18,00,000 per year
 ```
 
-### Dataset Constraints
+This range is used consistently by the deterministic dataset generator.
 
-The generator validates:
-
-* at least 40 records
-* at least 3 records for every category
-* at least 1 record for every status
-* `flagged_priority_review` between 10% and 30%
-* `days_since_created` between 0 and 30
-* expected salary between ₹4,00,000 and ₹18,00,000
-* all required fields are present
-
-The configured salary range is:
+### Application-age range
 
 ```text
-₹4,00,000 to ₹18,00,000
+days_since_created: 0-30
 ```
 
-This range was selected as a broad, realistic synthetic salary band for the supported Recruitment & HR job categories while remaining simple and reproducible for the capstone dataset.
+### Priority-review flag
 
-The use of `SEED = 42` makes the dataset reproducible.
+The percentage of applications with:
+
+```text
+flagged_priority_review = True
+```
+
+is validated to remain within the required:
+
+```text
+10%-30%
+```
+
+range.
+
+### Dataset validation
+
+`dataset.py` validates:
+
+* Record count
+* Required category coverage
+* Minimum category counts
+* Required status coverage
+* Salary range
+* Application-age range
+* Priority-review percentage
+* Required record fields
+
+The dataset is generated using a fixed seed so that the design is reproducible.
 
 ---
 
-## 2. Knowledge Base
+## 7.2 Task 2 - Knowledge Base
 
-The project contains 12 HR knowledge-base documents covering the required domain topics:
+The project contains the 12 required Recruitment & HR knowledge-base documents.
 
-1. Eligibility criteria
-2. Interview scheduling
-3. Offer negotiation
-4. Background verification
-5. Notice period
-6. Referral bonus
-7. Internal transfer
-8. Probation period
-9. Remote work
-10. Diversity hiring
-11. Exit interview
-12. Applicant-data retention
+| Topic                                | File                             |
+| ------------------------------------ | -------------------------------- |
+| Job-application eligibility criteria | `01_eligibility_criteria.txt`    |
+| Interview-scheduling process         | `02_interview_scheduling.txt`    |
+| Offer-negotiation policy             | `03_offer_negotiation.txt`       |
+| Background-verification process      | `04_background_verification.txt` |
+| Notice-period policy                 | `05_notice_period.txt`           |
+| Referral-bonus policy                | `06_referral_bonus.txt`          |
+| Internal-transfer eligibility        | `07_internal_transfer.txt`       |
+| Probation-period policy              | `08_probation_period.txt`        |
+| Remote-work eligibility              | `09_remote_work.txt`             |
+| Diversity-hiring guidelines          | `10_diversity_hiring.txt`        |
+| Exit-interview process               | `11_exit_interview.txt`          |
+| Applicant-data-retention policy      | `12_data_retention.txt`          |
 
-The files are stored under:
+Each document contains four sentences, satisfying the capstone requirement of **2–5 sentences per document**.
 
-```text
-knowledge_base/
-```
-
-The RAG implementation also validates that at least 12 documents are available.
-
-### Knowledge-base sentence-count verification
-
-The 12 knowledge-base source files were manually verified using a PowerShell sentence-count check.
-
-The result was:
-
-```text
-01_eligibility_criteria.txt       4
-02_interview_scheduling.txt       4
-03_offer_negotiation.txt          4
-04_background_verification.txt    4
-05_notice_period.txt              4
-06_referral_bonus.txt             4
-07_internal_transfer.txt          4
-08_probation_period.txt           4
-09_remote_work.txt                4
-10_diversity_hiring.txt           4
-11_exit_interview.txt             4
-12_data_retention.txt             4
-```
-
-Therefore, all 12 documents contain **4 sentences each**, satisfying the required **2-5 sentence** range for every knowledge-base document.
+The knowledge-base content is project-created material for the capstone and is not presented as live Naukri.com policy.
 
 ---
 
-## 3. Chunking Strategies
+## 7.3 Task 3 - Chunking Strategies
 
-Two chunking strategies were implemented and compared.
+Two independent chunking strategies are implemented.
 
-### Fixed-size Chunking
+### Fixed-size chunking
 
 ```text
 Chunk size = 200 characters
 Overlap = 50 characters
 ```
 
-### Sentence-based Chunking
+### Sentence-based chunking
 
 ```text
 2 sentences per chunk
 ```
 
-The project intentionally evaluates both approaches instead of selecting one without measurement.
+Each chunk retains its originating source-document identity.
 
-The Task 5 evaluation numbers are generated from the fixed-size and sentence-based chunking implementations used in the retrieval evaluation.
-
-For the **live CrewAI integration**, a word-boundary-safe refinement of the fixed-size chunking logic is used so that chunks remain within the configured size/overlap design while avoiding unnecessary splits in the middle of words. The live implementation is in `crew_agents.py`.
-
-This refinement does not change the documented Task 5 comparison results; it is a downstream integration refinement used by the deployed CrewAI path.
+This allows Task 5 evaluation to map retrieved chunks back to parent documents before computing document-level precision and recall.
 
 ---
 
-## 4. Embeddings and ChromaDB
+## 7.4 Task 3 - Embeddings and ChromaDB
 
-The project uses the local SentenceTransformers model:
+The local embedding model is:
 
 ```text
 sentence-transformers/all-MiniLM-L6-v2
 ```
 
-The vector database is ChromaDB.
-
-Two collections are used:
+The two retrieval strategies use separate ChromaDB collections:
 
 ```text
 fixed_chunks
 sentence_chunks
 ```
 
-The retrieval configuration uses:
+The configured retrieval depth is:
 
 ```text
 TOP_K = 3
 ```
 
-The embedding model and ChromaDB run locally, so the core RAG pipeline does not require a paid external embedding API.
+The final clean build produces:
+
+```text
+Fixed-size chunks: 45
+Sentence-based chunks: 24
+```
+
+The vector pipeline runs locally and does not require a paid embedding API.
 
 ---
 
-## 5. Grounded Generation
+## 7.5 Task 4 - Grounded Generation
 
-The retrieval layer compares similarity scores against a calibrated threshold.
-
-When the strongest retrieved result is below the threshold, the system returns:
-
-```text
-I don't know based on the available knowledge base.
-```
-
-This is preferable to generating a confident answer from weak retrieval evidence.
-
-The selected threshold is:
-
-```text
-0.3495
-```
-
-The deployed CrewAI RAG tool uses this threshold to determine whether a request is sufficiently grounded.
-
-Application-status lookup is a separate evidence path. It reads structured application data through `check_job_application_status(record_id)` and therefore does not depend on RAG similarity.
-
----
-
-## 6. Threshold Calibration
-
-The threshold was derived from measured in-scope and out-of-scope retrieval scores instead of using an arbitrary preset.
-
-### In-scope Measurements
-
-| Query                                                        | Collection        | Top-1 Similarity |
-| ------------------------------------------------------------ | ----------------- | ---------------: |
-| What degree is required for most professional jobs?          | `sentence_chunks` |           0.5715 |
-| How much notice should a candidate get before an interview?  | `sentence_chunks` |           0.5786 |
-| What is the normal employee notice period after resignation? | `sentence_chunks` |           0.7887 |
-| How much is the employee referral bonus?                     | `sentence_chunks` |           0.7571 |
-| When can an employee apply for an internal transfer?         | `sentence_chunks` |           0.8126 |
-| How long is the normal probation period?                     | `sentence_chunks` |           0.7332 |
-
-### Out-of-scope Measurements
-
-| Query                                      | Collection     | Top-1 Similarity |
-| ------------------------------------------ | -------------- | ---------------: |
-| What is the capital of France?             | `fixed_chunks` |           0.0890 |
-| What is the weather forecast for tomorrow? | `fixed_chunks` |           0.1275 |
-| How do I bake a chocolate cake?            | `fixed_chunks` |           0.0925 |
-
-The lowest measured in-scope value is:
-
-```text
-0.5715
-```
-
-The highest measured out-of-scope value is:
-
-```text
-0.1275
-```
-
-The midpoint is:
-
-```text
-(0.5715 + 0.1275) / 2 = 0.3495
-```
-
-Therefore:
-
-```text
-RAG_THRESHOLD = 0.3495
-```
-
-This produces an explicit and reproducible threshold-selection method.
-
----
-
-## 7. Chunking Evaluation
-
-Task 5 evaluates the same five in-scope queries against both collections.
-
-Retrieved chunks are mapped to parent source documents before calculating precision and recall. Duplicate chunks belonging to the same source document are not counted as separate documents.
-
-### Per-query precision and recall arithmetic
-
-### Fixed-size (`fixed_chunks`)
-
-1. Eligibility query
-
-   * Precision = 1 / 2 = 0.5000
-   * Recall = 1 / 1 = 1.0000
-
-2. Interview scheduling query
-
-   * Precision = 1 / 2 = 0.5000
-   * Recall = 1 / 1 = 1.0000
-
-3. Notice period query
-
-   * Precision = 1 / 3 = 0.3333
-   * Recall = 1 / 1 = 1.0000
-
-4. Referral bonus query
-
-   * Precision = 1 / 1 = 1.0000
-   * Recall = 1 / 1 = 1.0000
-
-5. Internal transfer query
-
-   * Precision = 1 / 1 = 1.0000
-   * Recall = 1 / 1 = 1.0000
-
-### Sentence-based (`sentence_chunks`)
-
-1. Eligibility query
-
-   * Precision = 1 / 3 = 0.3333
-   * Recall = 1 / 1 = 1.0000
-
-2. Interview scheduling query
-
-   * Precision = 1 / 2 = 0.5000
-   * Recall = 1 / 1 = 1.0000
-
-3. Notice period query
-
-   * Precision = 1 / 3 = 0.3333
-   * Recall = 1 / 1 = 1.0000
-
-4. Referral bonus query
-
-   * Precision = 1 / 2 = 0.5000
-   * Recall = 1 / 1 = 1.0000
-
-5. Internal transfer query
-
-   * Precision = 1 / 2 = 0.5000
-   * Recall = 1 / 1 = 1.0000
-
-### Results
-
-| Collection        | Average Precision | Average Recall |
-| ----------------- | ----------------: | -------------: |
-| `fixed_chunks`    |            0.6667 |         1.0000 |
-| `sentence_chunks` |            0.4333 |         1.0000 |
-
-### Selected Strategy
+The production CrewAI RAG path uses:
 
 ```text
 fixed_chunks
 ```
 
-The fixed-size strategy achieved higher average precision while maintaining the same average recall.
+as the deployed retrieval collection.
 
-For the live CrewAI integration, the selected fixed-size strategy is implemented with a word-boundary-safe refinement described above.
+The production RAG flow:
+
+1. Receives the user question.
+2. Applies input guardrails.
+3. Generates a local query embedding.
+4. Searches the production `fixed_chunks` collection.
+5. Retrieves the top `TOP_K` chunks.
+6. Examines the top-1 similarity.
+7. Compares that score against the empirically calibrated threshold.
+8. Returns grounded information when retrieval is sufficiently supported.
+9. Returns an explicit fallback when retrieval is below the threshold.
+
+The fallback is:
+
+```text
+I don't know based on the available knowledge base.
+```
+
+This prevents weak semantic matches from being turned into unsupported HR answers.
 
 ---
 
-# Part 2 - CrewAI Agent System
+## 7.6 Task 4 - Empirical Threshold Calibration
 
-## 1. Agents
+The production threshold is not hard-coded to a generic similarity value such as `0.5`, `0.6`, or `0.7`.
 
-The project uses three CrewAI agents.
+The calibration is performed on the **same `fixed_chunks` collection used by the production RAG path**.
+
+### In-scope calibration measurements
+
+| Query                                                        | Collection     | Top-1 cosine similarity |
+| ------------------------------------------------------------ | -------------- | ----------------------: |
+| What degree is required for most professional jobs?          | `fixed_chunks` |                  0.5823 |
+| How much notice should a candidate get before an interview?  | `fixed_chunks` |                  0.6734 |
+| What is the normal employee notice period after resignation? | `fixed_chunks` |                  0.7583 |
+| How much is the employee referral bonus?                     | `fixed_chunks` |                  0.7528 |
+| When can an employee apply for an internal transfer?         | `fixed_chunks` |                  0.8041 |
+| How long is the normal probation period?                     | `fixed_chunks` |                  0.7232 |
+
+The lowest measured in-scope score is approximately:
+
+```text
+0.5823
+```
+
+### Out-of-scope calibration measurements
+
+| Query                                      | Collection     | Top-1 cosine similarity |
+| ------------------------------------------ | -------------- | ----------------------: |
+| What is the capital of France?             | `fixed_chunks` |                  0.0890 |
+| What is the weather forecast for tomorrow? | `fixed_chunks` |                  0.1275 |
+| How do I bake a chocolate cake?            | `fixed_chunks` |                  0.1165 |
+
+The highest measured out-of-scope score is approximately:
+
+```text
+0.1275
+```
+
+### Chosen threshold
+
+The threshold is derived from the measured separation between the observed in-scope and out-of-scope groups.
+
+The final production threshold is:
+
+```text
+RAG_THRESHOLD = 0.3549
+```
+
+Therefore:
+
+```text
+similarity >= 0.3549
+    -> accept retrieval as sufficiently grounded
+
+similarity < 0.3549
+    -> return grounded fallback
+```
+
+The threshold is dataset-specific and tied to the production retrieval configuration.
+
+Whenever the knowledge base, embedding model, chunking strategy or production collection materially changes, Task 4 calibration should be regenerated.
+
+---
+
+## 7.7 Task 5 - Precision and Recall Evaluation
+
+Task 5 evaluates the same five in-scope queries independently against both chunking strategies.
+
+Retrieved chunks are mapped to their parent source documents before scoring.
+
+Multiple retrieved chunks from the same source document count as one retrieved document.
+
+### Fixed-size `fixed_chunks`
+
+#### Query: What degree is required for most professional jobs?
+
+```text
+Retrieved documents:
+['01_eligibility_criteria']
+
+Ground-truth documents:
+['01_eligibility_criteria']
+
+Precision = 1 / 1 = 1.0000
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: How much notice should a candidate get before an interview?
+
+```text
+Retrieved documents:
+['02_interview_scheduling']
+
+Ground-truth documents:
+['02_interview_scheduling']
+
+Precision = 1 / 1 = 1.0000
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: What is the normal employee notice period after resignation?
+
+```text
+Retrieved documents:
+['05_notice_period']
+
+Ground-truth documents:
+['05_notice_period']
+
+Precision = 1 / 1 = 1.0000
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: How much is the employee referral bonus?
+
+```text
+Retrieved documents:
+['06_referral_bonus']
+
+Ground-truth documents:
+['06_referral_bonus']
+
+Precision = 1 / 1 = 1.0000
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: When can an employee apply for an internal transfer?
+
+```text
+Retrieved documents:
+['07_internal_transfer']
+
+Ground-truth documents:
+['07_internal_transfer']
+
+Precision = 1 / 1 = 1.0000
+Recall    = 1 / 1 = 1.0000
+```
+
+### Fixed-size averages
+
+```text
+Precision = 1.0000
+Recall    = 1.0000
+```
+
+### Sentence-based `sentence_chunks`
+
+#### Query: What degree is required for most professional jobs?
+
+```text
+Retrieved documents:
+['01_eligibility_criteria', '09_remote_work', '10_diversity_hiring']
+
+Ground-truth documents:
+['01_eligibility_criteria']
+
+Precision = 1 / 3 = 0.3333
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: How much notice should a candidate get before an interview?
+
+```text
+Retrieved documents:
+['02_interview_scheduling', '10_diversity_hiring']
+
+Ground-truth documents:
+['02_interview_scheduling']
+
+Precision = 1 / 2 = 0.5000
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: What is the normal employee notice period after resignation?
+
+```text
+Retrieved documents:
+['05_notice_period', '08_probation_period', '11_exit_interview']
+
+Ground-truth documents:
+['05_notice_period']
+
+Precision = 1 / 3 = 0.3333
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: How much is the employee referral bonus?
+
+```text
+Retrieved documents:
+['03_offer_negotiation', '06_referral_bonus']
+
+Ground-truth documents:
+['06_referral_bonus']
+
+Precision = 1 / 2 = 0.5000
+Recall    = 1 / 1 = 1.0000
+```
+
+#### Query: When can an employee apply for an internal transfer?
+
+```text
+Retrieved documents:
+['05_notice_period', '07_internal_transfer']
+
+Ground-truth documents:
+['07_internal_transfer']
+
+Precision = 1 / 2 = 0.5000
+Recall    = 1 / 1 = 1.0000
+```
+
+### Sentence-based averages
+
+```text
+Precision = 0.4333
+Recall    = 1.0000
+```
+
+### Overall comparison
+
+| Collection        | Average Precision | Average Recall |
+| ----------------- | ----------------: | -------------: |
+| `fixed_chunks`    |            1.0000 |         1.0000 |
+| `sentence_chunks` |            0.4333 |         1.0000 |
+
+### Recommendation
+
+The fixed-size strategy is selected for production retrieval because it achieved:
+
+```text
+Precision = 1.0000
+Recall    = 1.0000
+```
+
+compared with:
+
+```text
+Sentence-based Precision = 0.4333
+Sentence-based Recall    = 1.0000
+```
+
+Therefore, within the evaluated sample, `fixed_chunks` provides the stronger retrieval precision while preserving full recall.
+
+---
+
+# 8. Part 2 - CrewAI Agent System
+
+## 8.1 Task 6 - Application Lookup and Escalation Score
+
+The dedicated application lookup function is:
+
+```python
+check_job_application_status(record_id: str) -> dict
+```
+
+The lookup result includes:
+
+```text
+record_id
+candidate_name
+status
+expected_salary_inr
+escalation_score
+escalation_recommended
+```
+
+### Escalation formula
+
+The score combines priority review and normalized application age.
+
+```text
+priority_signal =
+    1.0 if flagged_priority_review=True
+    0.0 otherwise
+```
+
+```text
+normalized_recency =
+    days_since_created / 30
+```
+
+```text
+escalation_score =
+    (0.6 * priority_signal)
+    + (0.4 * normalized_recency)
+```
+
+The score is constrained to the range:
+
+```text
+[0, 1]
+```
+
+This creates a continuous score rather than simply returning the original Boolean priority flag.
+
+### Escalation threshold
+
+The project uses an 80th-percentile threshold calculated from the generated dataset's escalation-score distribution:
+
+```text
+ESCALATION_THRESHOLD = 0.352
+```
+
+An application is recommended for escalation when:
+
+```text
+escalation_score >= ESCALATION_THRESHOLD
+```
+
+This threshold is derived from the generated application's score distribution rather than being an arbitrary constant.
+
+---
+
+## 8.2 Task 7 - CrewAI Agents
+
+The CrewAI implementation contains three agents.
 
 ### Retrieval Agent
 
-Role:
-
-```text
-HR Knowledge Retrieval Agent
-```
-
 Responsibilities:
 
-* retrieve HR information from the knowledge base
-* use the RAG tool
-* avoid inventing unsupported facts
+* Answer knowledge-base questions.
+* Retrieve HR policy information.
+* Invoke `rag_search()`.
+* Avoid unsupported claims.
 
 Tool:
 
@@ -774,21 +1057,13 @@ Tool:
 rag_search
 ```
 
----
-
 ### Lookup Agent
-
-Role:
-
-```text
-Job Application Lookup Agent
-```
 
 Responsibilities:
 
-* retrieve factual application information
-* use the application-status lookup tool
-* avoid inventing candidate/application information
+* Retrieve application-specific facts.
+* Invoke the structured application lookup function.
+* Return the facts required for the final answer.
 
 Tool:
 
@@ -796,130 +1071,61 @@ Tool:
 check_job_application_status
 ```
 
----
-
 ### Response Composer
-
-Role:
-
-```text
-HR Response Composer
-```
 
 Responsibilities:
 
-* combine the outputs of previous agents
-* answer the current user question
-* use only information returned by previous agents
-* avoid exposing internal tool instructions or raw control data
+* Combine outputs from the preceding agents.
+* Answer the current user question only.
+* Avoid exposing internal CrewAI formatting.
+* Produce the required structured response.
 
 Tools:
 
 ```text
-[]
+None
 ```
 
-The Composer has no tools.
-
----
-
-## 2. Tools
-
-### RAG Tool
-
-The Retrieval Agent uses:
-
-```text
-rag_search(query)
-```
-
-It searches the HR knowledge base and returns retrieved source information.
-
-The live `rag_search` tool is routed through the Task 16 normalized-query response cache. On a cache miss, it invokes the underlying `_real_rag_search()` function; on a cache hit, it returns the previously stored grounded-generation result without repeating the real RAG execution.
-
-The RAG tool also records:
-
-```text
-top similarity
-grounded/not grounded decision
-threshold
-```
-
-for downstream guardrail and evaluation logic.
-
----
-
-### Application Lookup Tool
-
-The application lookup is:
-
-```text
-check_job_application_status(record_id)
-```
-
-It reuses the Task 6 implementation.
-
-The score is calculated as:
-
-```text
-escalation_score =
-    0.6 * priority_signal
-    + 0.4 * normalized_recency
-```
-
-where:
-
-```text
-normalized_recency = days_since_created / 30
-```
-
-The escalation threshold is derived from the distribution of escalation scores across all 50 generated application records.
-
-The project uses the **80th percentile** of that score distribution as the recommended escalation threshold:
-
-```text
-ESCALATION_THRESHOLD = 0.352
-```
-
-The threshold represents the score above which an application would be recommended for higher-priority escalation under the project's governance policy.
-
-This percentile-based approach was selected so that escalation is based on the relative distribution of the project's own application records rather than an arbitrary fixed score.
-
-The current lookup function returns both the calculated `escalation_score` and an `escalation_recommended` boolean based on whether the score meets the configured threshold.
-
-The lookup returns factual application information rather than generating it.
-
----
-
-## 3. Sequential Workflow
-
-The main CrewAI process uses:
-
-```text
-Process.sequential
-```
-
-The execution order is:
+### Sequential workflow
 
 ```text
 Retrieval Agent
-       |
-       v
+      |
+      v
 Lookup Agent
-       |
-       v
+      |
+      v
 Response Composer
+      |
+      v
+Structured CrewResponse
 ```
 
-The Composer receives the context of both previous tasks.
+The crew is executed with:
 
-The three-agent architecture is intentionally simple and controlled.
+```python
+crew.kickoff()
+```
+
+The demonstrations verify actual invocation of:
+
+```text
+rag_search()
+```
+
+and:
+
+```text
+check_job_application_status()
+```
 
 ---
 
-## 4. Session Memory
+## 8.3 Task 8 - Session Memory
 
-Session memory is implemented with:
+Session memory is process-local and keyed by session identifier.
+
+The implementation uses:
 
 ```text
 InMemoryChatMessageHistory
@@ -927,33 +1133,45 @@ RunnableLambda
 RunnableWithMessageHistory
 ```
 
-The system maintains history separately by `session_id`.
-
-The important design decision is that memory is primarily used to recover an application ID.
-
-For example:
+### Same-session example
 
 ```text
-User:
-What is the status of APP001?
+Turn 1:
+What is the status of application APP001?
 
-User:
-What about its escalation level?
+Turn 2:
+What was the escalation score for that application?
 ```
 
-The second turn can recover `APP001` from the same session.
+The second turn can recover the application identifier from the existing session.
 
-A new session does not inherit the previous session's selected application ID.
+### Fresh-session behavior
 
-The RAG query itself remains based on the current user message rather than blindly searching the entire conversation history.
+A new session does not inherit the prior application's context.
 
-The executable Task 8 memory demonstration is contained in `crew_agents.py`; no separate `memory_demo.py` file is required.
+A fresh session receiving:
+
+```text
+What was the escalation score for that application?
+```
+
+without an application ID is therefore expected to request an application identifier instead of reusing the previous session's record.
+
+This demonstrates:
+
+* Multi-turn memory
+* Same-session continuity
+* Fresh-session isolation
+
+The memory is intentionally process-local because persistent cross-process storage is not required by the capstone.
 
 ---
 
-## 5. Structured Output
+## 8.4 Task 9 - Structured Output
 
-The project defines the following Pydantic model:
+Every CrewAI response is validated through a Pydantic model.
+
+The response schema is:
 
 ```python
 class CrewResponse(BaseModel):
@@ -962,25 +1180,31 @@ class CrewResponse(BaseModel):
     record_id: Optional[str] = None
 ```
 
-This provides a stable response contract for the CrewAI layer and the FastAPI layer.
+The CrewAI workflow uses:
 
-The response is explicitly validated before it is returned.
+```python
+response_format = CrewResponse
+```
+
+The actual crew result is subsequently validated against this Pydantic contract.
+
+A successful validation therefore produces a predictable response shape:
+
+```text
+final_answer
+query
+record_id
+```
 
 ---
 
-## 6. Guardrails
+## 8.5 Task 10 - Guardrails
 
-The project implements three main Task 10 controls.
+The project contains input and output safety controls.
 
-### Input PII Masking
+### Fixed-format phone PII masking
 
-Fixed-format Indian phone numbers are detected and replaced with:
-
-```text
-XXXXXXXXXX
-```
-
-Supported formats include examples such as:
+The input guardrail masks fixed-format phone numbers such as:
 
 ```text
 9876543210
@@ -990,13 +1214,19 @@ Supported formats include examples such as:
 +91-98765-43210
 ```
 
-The masked value is used downstream.
+The downstream representation is:
 
----
+```text
+XXXXXXXXXX
+```
 
-### Prompt-injection Detection
+The capstone demonstrations use fabricated values.
 
-The project checks for obvious injection patterns such as:
+The implementation focuses on the specifically required fixed-format phone-number masking behavior rather than attempting to provide a general-purpose PII detection engine.
+
+### Prompt-injection detection
+
+The guardrail detects common instruction-override patterns, including examples such as:
 
 ```text
 ignore previous instructions
@@ -1007,191 +1237,140 @@ reveal the system prompt
 show me the system prompt
 ```
 
-The configured policy is:
+Policy:
 
 ```text
-Phone PII        -> mask and continue
-Prompt injection -> block request
+Phone PII
+    -> mask and continue
+
+Prompt injection
+    -> block request
 ```
 
----
+### Output groundedness
 
-### Output Groundedness
-
-The output-side guardrail uses the RAG groundedness decision.
-
-When retrieval is not sufficiently grounded, the system refuses to present an unsupported generated answer.
-
-This prevents a weak retrieval result from being turned into a confident answer.
-
-### Application-status lookup exception
-
-Application-status responses are intentionally treated differently from RAG-backed knowledge-base answers.
-
-The `check_job_application_status(record_id)` tool returns structured facts directly from `job_applications.csv`. These responses do not depend on vector retrieval or a RAG similarity score.
-
-Therefore, when a response is backed by a valid application lookup (`record_id is not None`), the RAG similarity-based groundedness guardrail is intentionally bypassed.
-
-This is a deliberate design choice rather than a missing safety check.
-
-RAG-backed path:
+RAG-backed responses are checked against the calibrated production threshold:
 
 ```text
-RAG-backed answer
-       |
-       v
-RAG retrieval
-       |
-       v
-Similarity / groundedness decision
-       |
-       v
-Output groundedness guardrail
+RAG_THRESHOLD = 0.3549
 ```
 
-Application-status path:
+Therefore:
 
 ```text
-Application-status answer
-       |
-       v
+Top-1 similarity < 0.3549
+    -> grounded fallback
+```
+
+This is demonstrated deliberately with out-of-scope questions.
+
+### Application lookup evidence
+
+Application-status answers are backed by:
+
+```text
 check_job_application_status()
-       |
-       v
-Structured application data
-       |
-       v
-Factual response
 ```
 
-The groundedness guardrail is therefore applied to the evidence path for which its similarity-based decision is meaningful.
+which reads:
+
+```text
+job_applications.csv
+```
+
+The application lookup path is therefore not dependent on Chroma vector similarity.
+
+The RAG threshold is intentionally not used to reject a successfully retrieved structured application record.
 
 ---
 
-# Part 3 - API, Logging and Evaluation
+# 9. Part 3 - FastAPI, Logging and Evaluation
 
-## 1. FastAPI
+## 9.1 Task 11 - FastAPI Deployment
 
-The project exposes the agent through FastAPI.
-
-The API application is defined in:
+The FastAPI implementation is defined in:
 
 ```text
 api.py
 ```
 
-The application title is:
+The application exposes the required HTTP and WebSocket interfaces.
+
+### HTTP endpoints
 
 ```text
-Naukri HR Support Agent API
+POST /ask
+POST /add-document
 ```
 
-The API also configures:
+### WebSocket endpoint
+
+```text
+/ws/chat
+```
+
+### `POST /ask`
+
+Example request:
+
+```json
+{
+    "session_id": "demo-session",
+    "query": "What is the normal employee notice period?"
+}
+```
+
+### `POST /add-document`
+
+Example request:
+
+```json
+{
+    "content": "Document content here",
+    "source_name": "new_policy"
+}
+```
+
+### `/ws/chat`
+
+The WebSocket endpoint supports real-time multi-turn conversation.
+
+The implementation explicitly handles:
+
+```python
+WebSocketDisconnect
+```
+
+so a client disconnect does not terminate the FastAPI server.
+
+### Telemetry configuration
+
+The project disables telemetry using:
 
 ```text
 CREWAI_DISABLE_TELEMETRY=true
 OTEL_SDK_DISABLED=true
 ```
 
-so the capstone can run with the local deterministic setup without requiring external telemetry.
+The final `crew_agents.py` applies these environment settings **before CrewAI is imported**, so direct local CrewAI execution follows the same no-telemetry configuration.
 
-The implementation also executes blocking CrewAI and embedding operations through a worker thread so that the FastAPI event loop is not unnecessarily blocked.
-
----
-
-## 2. Endpoints
-
-### POST `/ask`
-
-Used for normal HR support requests.
-
-Request:
-
-```json
-{
-  "session_id": "demo-session",
-  "query": "What is the normal employee notice period?"
-}
-```
-
-The request model requires:
+Observed runtime output confirms:
 
 ```text
-session_id
-query
+Tracing is disabled.
 ```
-
-For each valid request, `apply_input_guardrails()` is called exactly once.
-
-The resulting `masked_text` is then reused as the downstream CrewAI query and as the query value written by the Task 12 JSONL logger.
-
-If the prompt-injection guardrail blocks the request, CrewAI execution is skipped and the request is still logged exactly once.
-
-The live CrewAI `rag_search()` path also uses the Task 16 normalized-query response cache for grounded-generation/RAG requests.
 
 ---
 
-### POST `/add-document`
+## 9.2 Task 12 - Structured JSONL Logging
 
-Used to add a knowledge-base document.
-
-Request:
-
-```json
-{
-  "content": "Document content here",
-  "source_name": "new_policy"
-}
-```
-
-The request model requires:
-
-```text
-content
-source_name
-```
-
-The full document body is not placed into the structured request log.
-
-Instead, the log receives a safe summary containing the source name and content length.
-
-The document is added to the deployed `fixed_chunks` ChromaDB collection using the existing RAG chunking and storage implementation.
-
----
-
-### WebSocket `/ws/chat`
-
-Used for real-time multi-turn chat.
-
-Each accepted message/turn receives:
-
-* a fresh `trace_id`
-* its own timing information
-* exactly one JSONL request log record
-
-Each WebSocket turn independently calls `apply_input_guardrails()` exactly once.
-
-The resulting masked text is reused for both CrewAI execution and JSONL logging.
-
-Prompt-injection-blocked turns are logged once and do not proceed to CrewAI.
-
-The server explicitly catches `WebSocketDisconnect` so a client disconnect ends that connection cleanly without terminating the FastAPI application or other active connections.
-
-Live grounded-generation RAG calls made through the CrewAI path can also use the normalized-query response cache.
-
----
-
-## 3. JSONL Logging
-
-Task 12 is implemented with:
+Structured logging is implemented in:
 
 ```text
 request_logger.py
 ```
 
-Each request/unit of work produces exactly one structured JSONL record.
-
-The log contains fields including:
+Requests are written as JSONL records containing fields such as:
 
 ```text
 timestamp
@@ -1203,68 +1382,62 @@ duration_ms
 status
 ```
 
-The logger itself does not perform PII masking.
-
-Instead:
+### Privacy-preserving request flow
 
 ```text
-Input
-  |
-  v
+Raw Input
+    |
+    v
 apply_input_guardrails()
-  |
-  v
-masked_text
-  |
-  +----------------------+
-  |                      |
-  v                      v
-CrewAI/model          JSONL logger
+    |
+    v
+Masked Text
+    |
+    +----------------------+
+    |                      |
+    v                      v
+  CrewAI              JSONL Logger
 ```
 
-For `/ask` and every WebSocket turn, this is the **same** Task 10 `masked_text` value.
+The same masked text is used by the application path and the logger.
 
-This prevents the logging layer from creating a second masking rule.
+Therefore the fixed-format phone number should not be written to the request log in clear text.
 
-### Exactly-one-record behavior
+### Validation-error logging
 
-The API uses request-finalization logic so that normal success, blocked requests, and execution failures each produce one JSONL entry.
+Malformed requests rejected by FastAPI/Pydantic validation are handled through the logging path without writing raw sensitive request content into the audit log.
 
-Requests rejected by FastAPI/Pydantic validation require special handling because the endpoint function itself is not entered. A dedicated `RequestValidationError` handler therefore writes one safe validation-failure record without reading or logging the malformed raw request body.
+### `/add-document` logging
 
-### Privacy behavior
+The complete submitted document body is not stored as the normal request-log query.
 
-The structured JSONL logger receives already-safe text.
-
-The full `/add-document` content is never written to the request log.
-
-The implementation also avoids logging raw user query text as part of the Task 12 record.
+Safe request metadata is logged instead.
 
 ---
 
-## 4. Task 13 Evaluation
+## 9.3 Task 13 - End-to-End Evaluation
 
-The Task 13 evaluation harness is:
+The evaluation harness is:
 
 ```text
 eval/task13_judge_eval.py
 ```
 
-It validates an evaluation set containing exactly:
+The evaluation set contains exactly:
 
 ```text
 15 queries
 ```
 
-The test set covers:
+The 15-query structure is:
 
 ```text
-12 KB topics
-2 out-of-scope queries
-1 application-status lookup
+12 required knowledge-base topic queries
+2 deliberately out-of-scope queries
+1 application-status lookup query
 ```
 
-The evaluation reports four required metrics:
+Every query receives four scores:
 
 ```text
 Accuracy
@@ -1273,89 +1446,78 @@ Completeness
 Safety
 ```
 
-The evaluation runs with the local deterministic `MOCK_LLM` setup.
+The evaluator uses the deterministic local `MOCK_LLM` setup.
 
-### Authoritative Task 13 Results
+### Authoritative Task 13 averages
 
-| Metric       | Average |
-| ------------ | ------: |
-| Accuracy     |  1.0000 |
-| Grounding    |  0.5971 |
-| Completeness |  1.0000 |
-| Safety       |  1.0000 |
+| Metric       |    Average |
+| ------------ | ---------: |
+| Accuracy     | **1.0000** |
+| Grounding    | **0.5971** |
+| Completeness | **1.0000** |
+| Safety       | **1.0000** |
 
-### Out-of-scope Behavior
+### Out-of-scope demonstrations
 
-Two deliberately unrelated questions triggered the fallback behavior.
+The final evaluation confirms that unsupported questions trigger the grounded fallback.
 
-| Query | Top-1 Similarity | Fallback |
-| ----- | ---------------: | -------- |
-| Q13   |           0.1479 | `True`   |
-| Q14   |           0.1260 | `True`   |
+| Query                                      | Observed Top-1 Similarity | Fallback |
+| ------------------------------------------ | ------------------------: | -------- |
+| What is the capital of France?             |                    0.1479 | `True`   |
+| What is the weather forecast for tomorrow? |                    0.1260 | `True`   |
 
-### Output Safety Check
+### Lookup evaluation
 
-The final evaluation recorded:
+The lookup query is:
 
 ```text
-Raw fixed-format phone PII: 0
+What is the status of application APP003?
 ```
 
-Detailed artifacts:
+The structured lookup returns:
+
+```text
+Application APP003 has status Applied.
+```
+
+The lookup response is evaluated as an application-record response rather than being treated as a semantic RAG answer.
+
+### Saved evaluation artifacts
 
 ```text
 eval/task13_results.json
 eval/task13_results.csv
 ```
 
+These files contain the detailed per-query evaluation results.
+
 ---
 
-# Part 4 - Governance and Optimization
+# 10. Part 4 - Governance and Optimization
 
-## 1. AutoGen Review
+## 10.1 Task 14 - AutoGen Review
 
-Task 14 is implemented in:
+The independent review implementation is:
 
 ```text
 autogen_review.py
 ```
 
-The governance review contains two AutoGen agents:
+The review stage contains two agents:
 
 ```text
 Policy-Compliance-Reviewer
 Final-Editor
 ```
 
-The workflow uses:
+The team uses:
 
 ```text
 RoundRobinGroupChat
 max_turns = 2
 ```
 
-The sequence is:
-
-```text
-CrewAI Composer Draft
-         |
-         v
-Policy-Compliance-Reviewer
-         |
-         v
-Final-Editor
-         |
-         v
-Structured Verdict
-```
-
-The review receives:
-
-* the CrewAI Composer draft
-* the original retrieved RAG context
-* the original question
-
-The Final-Editor returns the Pydantic model:
+The final verdict is represented by a Pydantic model:
 
 ```python
 class YourVerdictModel(BaseModel):
@@ -1364,15 +1526,30 @@ class YourVerdictModel(BaseModel):
     reason: str
 ```
 
-The AutoGen team also explicitly registers:
+The structured message contract is:
 
 ```text
 StructuredMessage[YourVerdictModel]
 ```
 
-### Approved Case
+### Review workflow
 
-The first demonstration uses a real CrewAI response and its real RAG context.
+```text
+CrewAI Draft
+    |
+    v
+Policy-Compliance-Reviewer
+    |
+    v
+Final-Editor
+    |
+    v
+Structured Verdict
+```
+
+### Approval demonstration
+
+A valid grounded answer is passed through the review stage.
 
 Expected behavior:
 
@@ -1381,164 +1558,110 @@ approved = True
 final_answer remains unchanged
 ```
 
-### Revised Case
+### Revision demonstration
 
-The second demonstration intentionally corrupts the draft by adding an unsupported claim about a signing bonus.
+A deliberately corrupted draft contains unsupported information.
 
-The governance layer must:
+The review stage identifies the problem and produces:
 
 ```text
-reject the corrupted draft
-remove the unsupported claim
-return a revised grounded answer
+approved = False
+revised final_answer
+reason explaining the correction
 ```
 
-This demonstrates that the review stage is actually checking grounding instead of always approving the CrewAI response.
+This demonstrates both approval and revision behavior.
 
 ---
 
-## 2. Least Autonomy
+## 10.2 Task 15 - AI Governance
 
-Task 15 applies the principle of least autonomy to privileged tools.
+Task 15 enforces governance at multiple layers.
 
-The sensitive tool is:
+### Least-autonomy enforcement
+
+The privileged lookup function is:
 
 ```text
 check_job_application_status
 ```
 
-The required ownership is:
 
-| Agent           | Application Lookup Tool |
-| --------------- | ----------------------- |
-| Retrieval Agent | No                      |
-| Lookup Agent    | Yes                     |
-| Composer Agent  | No                      |
+### Risk classification
 
-The governance implementation does not merely document this rule.
-
-It creates the live CrewAI agents, reads their actual tool collections, and verifies that:
+The implementation records the recruitment workflow as:
 
 ```text
-exactly one agent owns the privileged tool
+HIGH RISK
 ```
 
-That agent must be:
+within the capstone's supplied risk scheme.
 
-```text
-Lookup Agent
-```
+The system is a support agent rather than an autonomous hiring-decision system, but it operates within the recruitment/application domain and therefore follows the required governance classification.
 
-An unsafe wiring change raises an assertion failure.
+### Runtime token budget
 
----
-
-## 3. Risk Classification
-
-The application is classified as:
-
-```text
-High
-```
-
-The reason is that the system operates in the recruitment/hiring domain and handles job-application information such as:
-
-```text
-application status
-expected salary
-escalation score
-```
-
-The system is a support agent rather than an autonomous hiring decision-maker, but the capstone's risk scheme still places the use case in the High category.
-
----
-
-## 4. Runtime Token and Cost Budget
-
-The runtime governance controls include:
+Configured request token cap:
 
 ```text
 MAX_REQUEST_TOKENS = 2000
+```
+
+Requests exceeding this limit are rejected before downstream execution.
+
+### Runtime synthetic cost budget
+
+Configured synthetic request-cost limit:
+
+```text
 MAX_REQUEST_COST_USD = 0.015
 ```
 
-Because the project uses `MOCK_LLM`, the cost value is explicitly a **synthetic governance model**, not actual provider billing.
+Because the capstone workflow uses `MOCK_LLM`, this is a governance simulation rather than real provider billing.
 
-The token count is deterministic and based on whitespace splitting.
+The implementation separately demonstrates:
 
-### Demonstrations
-
-#### Normal Request
-
-A normal HR request is accepted when it remains inside both limits.
-
-#### Oversized Request
-
-The demonstration sends:
-
-```text
-2,500 tokens
-```
-
-against a:
-
-```text
-2,000 token limit
-```
-
-The request is rejected before downstream execution.
-
-#### Cost-limit Request
-
-A separate request uses:
-
-```text
-1,600 tokens
-```
-
-which is below the token ceiling but produces a synthetic cost above:
-
-```text
-$0.015
-```
-
-It is therefore rejected by the independent cost check.
-
-This proves that the token and cost controls are separate governance conditions.
+* Token-limit enforcement
+* Synthetic-cost-limit enforcement
+* Oversized request rejection
+* Fail-closed behavior
 
 ---
 
-## 5. Response Caching
+## 10.3 Task 16 - Response Caching
 
-Task 16 is implemented in:
+The cache is implemented in:
 
 ```text
 response_cache.py
 ```
 
-and integrated into the live CrewAI RAG tool in:
+and integrated into the live CrewAI RAG path through:
 
 ```text
 crew_agents.py
 ```
 
+### Cache characteristics
+
 The cache is:
 
 ```text
-in-memory
+In-memory
+Process-local
+RAG-only
+Normalized-query keyed
 ```
 
-The key is the:
+### Query normalization
+
+Normalization includes:
 
 ```text
-normalized query text
+Trim leading/trailing whitespace
+Convert to lowercase
+Collapse repeated whitespace
 ```
-
-Normalization performs:
-
-1. trimming leading/trailing whitespace
-2. converting text to lowercase
-3. collapsing repeated whitespace
 
 For example:
 
@@ -1546,245 +1669,200 @@ For example:
 "  What IS the notice period?  "
 ```
 
-becomes:
+normalizes to:
 
 ```text
 "what is the notice period?"
 ```
 
-The live `rag_search(query)` tool uses this cache before executing the underlying `_real_rag_search(query)` function.
-
-### Live-path behavior
+### Live cache flow
 
 ```text
-CrewAI Retrieval Agent
-          |
-          v
-    rag_search(query)
-          |
-          v
-  response_cache.py
-          |
-     +----+----+
-     |         |
-     v         v
- Cache HIT  Cache MISS
-     |         |
-     v         v
-Cached      _real_rag_search()
-result            |
-                  v
-               ChromaDB
+Retrieval Agent
+      |
+      v
+rag_search(query)
+      |
+      v
+Response Cache
+      |
+   +--+--+
+   |     |
+   v     v
+  HIT   MISS
+   |     |
+   v     v
+Cached  _real_rag_search()
+Result       |
+             v
+          ChromaDB
 ```
 
-On a cache hit, the real RAG execution is skipped.
+### Demonstrated cache behavior
 
-On a cache miss, the real RAG function executes once and the resulting grounded-generation response is stored using the normalized query as the cache key.
-
-The application-status lookup is deliberately **not cached**, because application status can change and a cached status could become stale.
-
-### Task 16 Demonstration
-
-The demonstration sends two logically identical queries with different casing/whitespace.
+The cache demonstration uses logically equivalent requests.
 
 Expected evidence:
 
 ```text
 First request:
-
 CACHE MISS
 
-REAL_RAG_CALL_COUNT = 1
+Real RAG call count:
+1
 
 Second normalized request:
-
 CACHE HIT
 
-REAL_RAG_CALL_COUNT remains 1
+Real RAG call count:
+1
 ```
 
-The verified execution produced:
+The demonstration also verifies:
 
 ```text
-Real grounded-generation calls : 1
-
-Cache hits                      : 1
-
-Cache misses                    : 1
-
-Normalized keys equal           : True
-
-Returned results equal          : True
+Normalized keys equal = True
+Returned results equal = True
 ```
 
-The demonstration also verifies that the two normalized keys are equal and that the cached response matches the first response.
+The call counter provides direct evidence that the second equivalent request does not repeat the underlying RAG execution.
 
-Timing is printed as secondary evidence, while the real-RAG call counter is the stronger proof that the second equivalent query avoided duplicate RAG work.
+### Cache scope
+
+Only RAG/grounded-generation results are cached.
+
+Application-status lookup is deliberately excluded from caching because application state can change.
 
 ---
 
-# Key Design Choices
+# 11. Key Design Decisions
 
-## Why Local Embeddings?
+## Why `fixed_chunks` for production?
 
-The project uses:
-
-```text
-sentence-transformers/all-MiniLM-L6-v2
-```
-
-to keep the embedding stage local and reproducible.
-
----
-
-## Why Fixed-size Chunking?
-
-Both strategies achieved full recall in the Task 5 test, but fixed-size chunking achieved higher average precision.
-
-Therefore:
+Task 5 produced:
 
 ```text
-fixed_chunks
+fixed_chunks:
+Precision = 1.0000
+Recall    = 1.0000
 ```
 
-was selected for the deployed path.
-
-A word-boundary-safe refinement of the fixed-size chunker is used in the live CrewAI integration to avoid unnecessary mid-word splits while preserving the intended chunk-size/overlap design.
-
----
-
-## Why a Calibrated Threshold?
-
-A threshold such as `0.5` or `0.7` was not chosen arbitrarily.
-
-Instead, the project measured representative in-scope and out-of-scope queries and derived:
+versus:
 
 ```text
-0.3495
+sentence_chunks:
+Precision = 0.4333
+Recall    = 1.0000
 ```
 
-from those observed values.
+Therefore the fixed-size strategy was selected for the deployed RAG path.
 
----
+## Why empirical threshold calibration?
 
-## Why Separate Retrieval and Lookup Agents?
+Similarity scores depend on the embedding model, knowledge-base content, chunking strategy and retrieval collection.
 
-Knowledge-base retrieval and application lookup have different responsibilities.
+Therefore a generic threshold would not be sufficiently justified.
 
-Keeping them separate makes the system easier to reason about and also enables least-autonomy enforcement.
-
-The privileged application lookup tool belongs only to the Lookup Agent.
-
----
-
-## Why Does Application Lookup Bypass RAG Groundedness?
-
-The system has two different evidence paths.
-
-RAG-backed knowledge-base answers depend on semantic retrieval, so the output groundedness guardrail evaluates whether the retrieval decision is above the calibrated RAG threshold.
-
-Application-status answers use the dedicated `check_job_application_status(record_id)` tool, which reads structured facts directly from `job_applications.csv`.
-
-Because application lookup does not depend on vector retrieval, applying a RAG similarity threshold to those responses would not provide a meaningful safety signal.
-
-Therefore:
+The project measures representative in-scope and out-of-scope retrieval scores and derives:
 
 ```text
-RAG-backed answer
-      |
-      v
-RAG retrieval
-      |
-      v
-similarity / groundedness decision
-      |
-      v
-output groundedness guardrail
+RAG_THRESHOLD = 0.3549
 ```
 
-Application-status answer:
+from those observed distributions.
+
+## Why separate retrieval and lookup agents?
+
+The evidence sources are different:
+
+```text
+RAG
+    -> controlled HR knowledge base
+    -> semantic retrieval
+```
 
 ```text
 Application lookup
-      |
-      v
-structured application data
-      |
-      v
-factual response
-      |
-      v
-no RAG groundedness check
+    -> structured job-application CSV
+    -> exact application record lookup
 ```
 
-This is an intentional separation based on the source of truth for each answer type.
+Keeping the tools separate also makes least-autonomy enforcement explicit and auditable.
 
----
+## Why is application lookup outside RAG thresholding?
 
-## Why Is the Response Cache Integrated into the Live Path?
+A successful structured lookup does not depend on semantic retrieval similarity.
 
-Task 16 requires implementing an in-memory cache keyed by normalized query text and demonstrating that a repeated equivalent request avoids redundant grounded-generation work.
-
-The repository therefore integrates the cache into the live CrewAI `rag_search()` tool.
-
-The underlying `_real_rag_search()` function remains separate so the cache can control whether the actual RAG operation executes.
-
-This allows the system to preserve the existing RAG behavior while avoiding duplicate retrieval work for repeated equivalent queries.
-
-Application-status lookup remains outside the cache because application records may change and should not be served from stale cached results.
-
----
-
-## Why No Lookup Caching?
-
-Application status is mutable.
-
-Caching a status response could cause the system to return stale information.
-
-Therefore the response cache is restricted to grounded-generation/RAG and does not cache application-status lookup results.
-
----
-
-## Why `MOCK_LLM`?
-
-The capstone is designed to be reproducible without depending on a paid external LLM service.
-
-The repository therefore uses deterministic local/mock behavior for its demonstrations and evaluation.
-
-This also makes the acceptance demonstrations easier to reproduce.
-
----
-
-## Why Is the CrewAI Version Pinned?
-
-The `MOCK_LLM` implementation integrates with the tested CrewAI prompt structure, including the ReAct-style sections and context markers used by the workflow.
-
-The validated working environment reports:
+Therefore:
 
 ```text
-CrewAI = 1.15.18
+Chroma similarity threshold
 ```
 
-Therefore the submission's `requirements.txt` pins:
+is applicable to the RAG path but not to a successfully resolved application record.
+
+## Why use local embeddings?
+
+The local SentenceTransformers model allows the retrieval layer to operate without a paid external embedding API.
+
+## Why use `MOCK_LLM`?
+
+The capstone requires deterministic demonstrations that do not depend on paid API access.
+
+`MOCK_LLM` provides deterministic behavior for:
+
+* CrewAI demonstrations
+* Task 13 evaluation
+* Governance demonstrations
+
+The retrieval layer remains a real local embedding + ChromaDB implementation.
+
+## Why pin CrewAI?
+
+The project depends on the tested behavior of the CrewAI integration, including the custom deterministic `MOCK_LLM`.
+
+The validated version is:
 
 ```text
 crewai==1.15.18
 ```
 
-Pinning the tested CrewAI release reduces the risk that a fresh installation resolves to a different internal prompt format and silently changes the behavior of the deterministic `MOCK_LLM`.
+Changing the CrewAI version should be treated as a compatibility change and revalidated before submission.
+
+## Why disable telemetry?
+
+The capstone requires controlled deterministic local execution.
+
+The project therefore uses:
+
+```text
+CREWAI_DISABLE_TELEMETRY=true
+OTEL_SDK_DISABLED=true
+```
+
+and applies these before importing CrewAI in the main CrewAI implementation.
+
+## Why is the cache RAG-only?
+
+Application records may be mutable.
+
+Caching application-status results could therefore return stale information.
+
+RAG results are the intended target of Task 16's normalized-query cache.
 
 ---
 
-# How to Run
+# 12. How to Run
 
-## 1. Clone the Repository
+## 12.1 Clone the repository
 
 ```powershell
 git clone https://github.com/Dipanshu956/naukri-domain-support-agent.git
+
 cd naukri-domain-support-agent
 ```
 
-## 2. Create a Virtual Environment
+## 12.2 Create the virtual environment
 
 ```powershell
 python -m venv venv
@@ -1796,29 +1874,25 @@ Activate it:
 .\venv\Scripts\Activate.ps1
 ```
 
-## 3. Install Dependencies
+## 12.3 Install dependencies
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-The project is validated against:
+The validated CrewAI version is:
 
 ```text
 crewai==1.15.18
 ```
 
-For maximum reproducibility, the remaining dependency versions should be retained from the validated working environment when a complete dependency lock is generated.
-
----
-
-## 4. Generate and Validate the Dataset
+## 12.4 Generate and validate the dataset
 
 ```powershell
 python dataset.py
 ```
 
-This generates:
+This creates:
 
 ```text
 job_applications.csv
@@ -1826,76 +1900,88 @@ job_applications.csv
 
 and validates the required dataset constraints.
 
----
-
-## 5. Build and Evaluate the RAG Pipeline
+## 12.5 Build and evaluate the RAG layer
 
 ```powershell
 python rag_core.py
 ```
 
-This loads the knowledge base, creates both chunking strategies, loads the embedding model, and runs the retrieval/evaluation flow.
+This performs:
 
----
+* Knowledge-base loading
+* Fixed-size chunking
+* Sentence-based chunking
+* Local embedding generation
+* ChromaDB indexing
+* Production fixed-path threshold calibration
+* Grounded-generation demonstrations
+* Out-of-scope fallback demonstration
+* Task 5 precision/recall comparison
 
-## 6. Run CrewAI Demonstrations
+The final validated production values are:
+
+```text
+Fixed chunks:
+45
+
+Sentence chunks:
+24
+
+Production collection:
+fixed_chunks
+
+Production threshold:
+0.3549
+```
+
+A clean rebuild recreates the two Chroma collections so stale vectors from previous executions do not accumulate.
+
+## 12.6 Run CrewAI demonstrations
 
 ```powershell
 python crew_agents.py
 ```
 
-The demonstrations cover:
+This demonstrates:
 
-```text
-RAG tool invocation
-application lookup
-structured response validation
-memory behavior
-```
+* Retrieval Agent
+* Lookup Agent
+* Response Composer
+* Actual RAG-tool invocation
+* Actual application-lookup invocation
+* Pydantic response validation
+* Same-session memory
+* Fresh-session isolation
+* Live RAG response caching
+* Disabled CrewAI tracing
 
-The Task 8 memory demonstration is contained inside `crew_agents.py`.
-
-The live `rag_search()` path also uses the normalized-query response cache.
-
----
-
-## 7. Run Guardrail Demonstrations
-
-```powershell
-python guardrails.py
-```
-
-This demonstrates the input/output safety controls.
-
-The repository also retains:
+## 12.7 Run guardrail demonstrations
 
 ```powershell
 python task_10.py
 ```
 
-as the Task 10 demonstration/runner entry point when that file is used.
+Reusable guardrail logic is implemented in:
 
----
+```text
+guardrails.py
+```
 
-## 8. Run the Task 14 AutoGen Review
+## 12.8 Run AutoGen review
 
 ```powershell
 python autogen_review.py
 ```
 
-The demonstration covers:
+This demonstrates:
 
-```text
-approved grounded answer
-rejected/revised unsupported answer
-two-agent AutoGen workflow
-max_turns=2
-structured verdict
-```
+* Approval of a valid answer
+* Revision of an unsupported answer
+* Two-agent Round Robin review
+* `max_turns=2`
+* Structured Pydantic verdict
 
----
-
-## 9. Run Task 15 Governance
+## 12.9 Run governance tests
 
 ```powershell
 python governance.py
@@ -1903,17 +1989,13 @@ python governance.py
 
 This demonstrates:
 
-```text
-least autonomy
-risk classification
-token budget
-synthetic cost budget
-fail-closed oversized-request handling
-```
+* Least-autonomy enforcement
+* High-risk classification
+* Token budget enforcement
+* Synthetic cost budget enforcement
+* Oversized request rejection
 
----
-
-## 10. Run Task 16 Response Caching
+## 12.10 Run response-cache demonstration
 
 ```powershell
 python response_cache.py
@@ -1921,130 +2003,222 @@ python response_cache.py
 
 This demonstrates:
 
-```text
-cache miss
-real RAG execution
-normalized query key
-cache hit
-duplicate RAG call avoided
-```
+* Query normalization
+* Cache miss
+* Real RAG execution
+* Cache hit
+* Duplicate RAG execution avoided
+* Real call-count evidence
 
-The demonstration now uses the same underlying RAG implementation registered by `crew_agents.py`, and the live `rag_search()` tool uses the same cache layer during normal CrewAI execution.
-
----
-
-## 11. Run Task 13 Evaluation
+## 12.11 Run Task 13 evaluation
 
 ```powershell
 python eval/task13_judge_eval.py
 ```
 
-Expected artifacts:
+Artifacts:
 
 ```text
 eval/task13_results.json
 eval/task13_results.csv
 ```
 
----
+The current verified averages are:
 
-## 12. Start the FastAPI Server
+```text
+Accuracy     = 1.0000
+Grounding    = 0.5971
+Completeness = 1.0000
+Safety       = 1.0000
+```
+
+## 12.12 Start FastAPI
 
 ```powershell
 uvicorn api:app --reload
 ```
 
-FastAPI will expose the API and interactive documentation.
+Interactive documentation:
 
-The interactive API documentation is available through the normal FastAPI `/docs` route.
+```text
+http://127.0.0.1:8000/docs
+```
 
 ---
 
-# Demonstration and Evidence
+# 13. Demonstration and Evidence
 
-The repository contains implementation and evaluation artifacts for the major capstone requirements.
+## Task 1
 
-## RAG Evidence
+Primary evidence:
+
+```text
+dataset.py
+job_applications.csv
+```
+
+Demonstrates:
+
+* Deterministic generation
+* Required categories
+* Required statuses
+* Minimum category coverage
+* Salary range
+* Application-age range
+* Priority-review percentage
+
+## Task 2
+
+Primary evidence:
+
+```text
+knowledge_base/
+```
+
+Contains all 12 required knowledge-base topics.
+
+## Task 3
+
+Primary evidence:
+
+```text
+rag_core.py
+chroma_db/
+```
+
+Demonstrates:
+
+* Fixed-size chunking
+* Sentence-based chunking
+* Local embeddings
+* Separate Chroma collections
+
+## Task 4
+
+Primary evidence:
 
 ```text
 rag_core.py
 ```
 
-contains:
+Demonstrates:
 
-* document loading
-* fixed-size chunking
-* sentence-based chunking
-* ChromaDB setup
-* embedding generation
-* retrieval
-* threshold calibration
-* precision/recall evaluation
+* Production fixed-path calibration
+* In-scope calibration measurements
+* Out-of-scope calibration measurements
+* Empirical threshold calculation
+* Grounded answers
+* Out-of-scope fallback
 
-The live CrewAI integration also contains its word-boundary-safe fixed-size chunking refinement in `crew_agents.py`.
+Final threshold:
 
----
+```text
+0.3549
+```
 
-## CrewAI Evidence
+## Task 5
+
+Primary evidence:
+
+```text
+rag_core.py
+```
+
+Demonstrates:
+
+* Per-query document-level precision
+* Per-query document-level recall
+* Parent-document deduplication
+* Comparison of both chunking strategies
+* Numbers-based deployment recommendation
+
+## Task 6
+
+Primary evidence:
+
+```text
+task6_tool.py
+```
+
+Demonstrates:
+
+* Application lookup
+* Status
+* Expected salary
+* Escalation score
+* Escalation recommendation
+
+## Tasks 7–9
+
+Primary evidence:
 
 ```text
 crew_agents.py
 ```
 
-contains:
+Demonstrates:
 
-* three-agent creation
-* tool ownership
-* sequential workflow
-* session memory
-* structured response validation
-* `MOCK_LLM`
-* executable Task 8 memory demonstration
-* live integration with the normalized-query response cache
+* Three-agent CrewAI workflow
+* RAG tool ownership
+* Lookup tool ownership
+* Sequential execution
+* Session memory
+* Fresh-session isolation
+* Structured CrewResponse validation
 
----
+## Task 10
 
-## Guardrail Evidence
+Primary evidence:
 
 ```text
 guardrails.py
+task_10.py
 ```
 
-contains:
+Demonstrates:
 
-* phone PII masking
-* prompt-injection detection
-* output groundedness handling
+* Phone-number masking
+* Prompt-injection blocking
+* RAG groundedness fallback
 
-`task_10.py` is the executable Task 10 demonstration/runner when retained in the repository.
+## Task 11
 
-The output groundedness control applies to RAG-backed answers. Application-status responses intentionally follow the structured lookup evidence path instead of the RAG similarity path.
-
----
-
-## API Evidence
+Primary evidence:
 
 ```text
 api.py
-request_logger.py
 test_websocket.py
 ```
 
-contain:
+Demonstrates:
 
-* REST endpoints
-* WebSocket endpoint
-* validation handling
-* trace IDs
-* timings
-* structured JSONL logging
-* one-pass input masking and masked-text reuse
-* clean WebSocket disconnect handling
-* live CrewAI RAG requests using the normalized-query response cache
+* `POST /ask`
+* `POST /add-document`
+* `/ws/chat`
+* Pydantic request/response models
+* WebSocket disconnect handling
 
----
+## Task 12
 
-## Evaluation Evidence
+Primary evidence:
+
+```text
+request_logger.py
+api.py
+logs/requests.jsonl
+```
+
+Demonstrates:
+
+* Structured JSONL logging
+* Trace IDs
+* Timing
+* Safe request text
+* Masked input logging
+
+## Task 13
+
+Primary evidence:
 
 ```text
 eval/task13_judge_eval.py
@@ -2052,152 +2226,202 @@ eval/task13_results.json
 eval/task13_results.csv
 ```
 
-contain the Task 13 evaluation setup and results.
+Demonstrates:
 
----
+* Exactly 15 evaluation queries
+* 12 knowledge-base topics
+* 2 out-of-scope queries
+* 1 application lookup query
+* Accuracy
+* Grounding
+* Completeness
+* Safety
 
-## Governance Evidence
+## Task 14
+
+Primary evidence:
 
 ```text
 autogen_review.py
-governance.py
 ```
 
-contain:
+Demonstrates:
 
-* AutoGen review
-* structured verdicts
-* least-autonomy checks
-* risk classification
-* token/cost governance
-* fail-closed behavior
+* Two-agent review
+* `RoundRobinGroupChat`
+* `max_turns=2`
+* Structured verdict
+* Approval demonstration
+* Revision demonstration
 
----
+## Task 15
 
-## Caching Evidence
+Primary evidence:
+
+```text
+governance.py
+crew_agents.py
+```
+
+Demonstrates:
+
+* Least autonomy
+* Tool ownership restrictions
+* Risk classification
+* Token cap
+* Synthetic cost cap
+* Oversized request rejection
+* Fail-closed behavior
+
+## Task 16
+
+Primary evidence:
 
 ```text
 response_cache.py
 crew_agents.py
 ```
 
-contain:
+Demonstrates:
 
-* query normalization
-* cache storage
-* hit/miss counters
-* real-RAG call counter
-* live CrewAI RAG integration
-* repeated-query demonstration
-
-The cache is integrated into the live `rag_search()` path, while application-status lookup is intentionally excluded from caching.
+* Normalized query keys
+* Cache miss
+* Cache hit
+* Live CrewAI integration
+* Real RAG call counter
+* Duplicate RAG execution avoided
 
 ---
 
-# Acceptance Criteria Checklist
+# 14. Acceptance Criteria Checklist
 
-| Requirement                                                        | Status | Evidence                              |
-| ------------------------------------------------------------------ | :----: | ------------------------------------- |
-| Dataset has at least 40 records                                    |    ✅   | `dataset.py`                          |
-| Five required categories are represented                           |    ✅   | `dataset.py`                          |
-| Five required statuses are represented                             |    ✅   | `dataset.py`                          |
-| Flagged records remain within 10%-30%                              |    ✅   | `dataset.py`                          |
-| Salary values remain within configured range                       |    ✅   | `dataset.py`                          |
-| `days_since_created` remains within 0-30                           |    ✅   | `dataset.py`                          |
-| At least 12 KB documents are available                             |    ✅   | `knowledge_base/`, `rag_core.py`      |
-| Every KB document contains 2-5 sentences                           |    ✅   | 12 source files verified              |
-| Fixed-size chunking implemented                                    |    ✅   | `rag_core.py`                         |
-| Sentence-based chunking implemented                                |    ✅   | `rag_core.py`                         |
-| ChromaDB vector retrieval implemented                              |    ✅   | `rag_core.py`                         |
-| Local SentenceTransformers embeddings used                         |    ✅   | `rag_core.py`                         |
-| Grounded fallback exists                                           |    ✅   | `rag_core.py`, `crew_agents.py`       |
-| Similarity threshold calibrated from measurements                  |    ✅   | `rag_core.py`                         |
-| Precision and recall evaluated                                     |    ✅   | Task 5 results                        |
-| Fixed-size strategy selected using evaluation                      |    ✅   | Task 5 results                        |
-| Live CrewAI chunking uses word-boundary-safe refinement            |    ✅   | `crew_agents.py`                      |
-| Retrieval Agent implemented                                        |    ✅   | `crew_agents.py`                      |
-| Lookup Agent implemented                                           |    ✅   | `crew_agents.py`                      |
-| Response Composer implemented                                      |    ✅   | `crew_agents.py`                      |
-| Crew uses sequential processing                                    |    ✅   | `crew_agents.py`                      |
-| Application lookup tool implemented                                |    ✅   | `task6_tool.py`                       |
-| Escalation score uses priority + recency                           |    ✅   | `task6_tool.py`                       |
-| Escalation threshold uses 80th-percentile score distribution       |    ✅   | `task6_tool.py`                       |
-| Session memory implemented                                         |    ✅   | `crew_agents.py`                      |
-| Structured Pydantic response implemented                           |    ✅   | `crew_agents.py`                      |
-| Phone PII masking implemented                                      |    ✅   | `guardrails.py`                       |
-| Prompt-injection detection implemented                             |    ✅   | `guardrails.py`                       |
-| Output groundedness guardrail implemented for RAG-backed answers   |    ✅   | `guardrails.py`, `api.py`             |
-| Application-lookup responses intentionally bypass RAG groundedness |    ✅   | `api.py`, `task6_tool.py`             |
-| `POST /ask` implemented                                            |    ✅   | `api.py`                              |
-| `POST /add-document` implemented                                   |    ✅   | `api.py`                              |
-| WebSocket `/ws/chat` implemented                                   |    ✅   | `api.py`                              |
-| WebSocket disconnect handled cleanly                               |    ✅   | `api.py`                              |
-| One JSONL record per request/unit of work                          |    ✅   | `request_logger.py`, `api.py`         |
-| Fresh trace ID and timing information                              |    ✅   | `api.py`, `request_logger.py`         |
-| Safe masked text used for logging                                  |    ✅   | `api.py`                              |
-| Task 13 uses exactly 15 queries                                    |    ✅   | `eval/task13_judge_eval.py`           |
-| Task 13 covers 12 KB topics                                        |    ✅   | evaluation set                        |
-| Task 13 includes out-of-scope tests                                |    ✅   | evaluation set                        |
-| Task 13 includes application lookup                                |    ✅   | evaluation set                        |
-| Accuracy measured                                                  |    ✅   | Task 13 results                       |
-| Grounding measured                                                 |    ✅   | Task 13 results                       |
-| Completeness measured                                              |    ✅   | Task 13 results                       |
-| Safety measured                                                    |    ✅   | Task 13 results                       |
-| AutoGen two-agent review implemented                               |    ✅   | `autogen_review.py`                   |
-| `RoundRobinGroupChat` used                                         |    ✅   | `autogen_review.py`                   |
-| `max_turns=2` enforced                                             |    ✅   | `autogen_review.py`                   |
-| Pydantic structured verdict implemented                            |    ✅   | `autogen_review.py`                   |
-| Approved case demonstrated                                         |    ✅   | Task 14                               |
-| Unsupported/corrupted case demonstrated                            |    ✅   | Task 14                               |
-| Least-autonomy enforcement implemented                             |    ✅   | `governance.py`                       |
-| Lookup tool restricted to Lookup Agent                             |    ✅   | `governance.py`                       |
-| High-risk classification implemented                               |    ✅   | `governance.py`                       |
-| Token budget implemented                                           |    ✅   | `governance.py`                       |
-| Synthetic cost budget implemented                                  |    ✅   | `governance.py`                       |
-| Oversized request fails closed                                     |    ✅   | `governance.py`                       |
-| Response cache implemented                                         |    ✅   | `response_cache.py`, `crew_agents.py` |
-| Cache key uses normalized query                                    |    ✅   | `response_cache.py`                   |
-| Cache hit skips duplicate RAG execution in demonstration           |    ✅   | `response_cache.py`                   |
-| Call-counter evidence provided                                     |    ✅   | `response_cache.py`                   |
-| Lookup responses intentionally excluded from cache                 |    ✅   | `response_cache.py`                   |
-| Live CrewAI RAG path uses response caching                         |    ✅   | `crew_agents.py`, `response_cache.py` |
-| Tested CrewAI version recorded                                     |    ✅   | `requirements.txt`, `README.md`       |
+| Acceptance Criterion                              | Status | Evidence                       |
+| ------------------------------------------------- | :----: | ------------------------------ |
+| At least 40 deterministic application records     |    ✅   | `dataset.py`                   |
+| All required categories represented               |    ✅   | `dataset.py`                   |
+| All required statuses represented                 |    ✅   | `dataset.py`                   |
+| Every category appears at least 3 times           |    ✅   | Dataset validation             |
+| Priority-review percentage is 10%–30%             |    ✅   | Dataset validation             |
+| Realistic salary range documented                 |    ✅   | Dataset + README               |
+| `days_since_created` is 0–30                      |    ✅   | Dataset validation             |
+| 12 required KB topics                             |    ✅   | `knowledge_base/`              |
+| Every KB document has 2–5 sentences               |    ✅   | KB files                       |
+| Fixed-size chunking                               |    ✅   | `rag_core.py`                  |
+| Sentence-based chunking                           |    ✅   | `rag_core.py`                  |
+| Separate Chroma collections                       |    ✅   | `rag_core.py`                  |
+| Local SentenceTransformers embeddings             |    ✅   | `rag_core.py`                  |
+| Grounded generation                               |    ✅   | `rag_core.py`                  |
+| Empirical threshold calibration                   |    ✅   | `rag_core.py`                  |
+| Threshold calibrated on production `fixed_chunks` |    ✅   | `rag_core.py`                  |
+| At least 5 in-scope demonstrations                |    ✅   | Task 4                         |
+| At least 1 out-of-scope fallback                  |    ✅   | Task 4                         |
+| Precision/recall for both strategies              |    ✅   | Task 5                         |
+| Numbers-based strategy recommendation             |    ✅   | Task 5                         |
+| Designed escalation score                         |    ✅   | `task6_tool.py`                |
+| CrewAI crew has at least 3 agents                 |    ✅   | `crew_agents.py`               |
+| RAG tool invoked                                  |    ✅   | CrewAI execution               |
+| Lookup tool invoked                               |    ✅   | CrewAI execution               |
+| Same-session memory                               |    ✅   | `crew_agents.py`               |
+| Fresh-session reset                               |    ✅   | Task 8 demonstration           |
+| Pydantic `CrewResponse`                           |    ✅   | `crew_agents.py`               |
+| Input PII masking                                 |    ✅   | `guardrails.py`                |
+| Prompt-injection detection                        |    ✅   | `guardrails.py`                |
+| Output groundedness control                       |    ✅   | `guardrails.py` / RAG          |
+| `POST /ask`                                       |    ✅   | `api.py`                       |
+| `POST /add-document`                              |    ✅   | `api.py`                       |
+| WebSocket endpoint                                |    ✅   | `api.py`                       |
+| WebSocket disconnect handling                     |    ✅   | `api.py`                       |
+| Structured JSONL logging                          |    ✅   | `request_logger.py`            |
+| Trace ID and timing                               |    ✅   | `api.py`, `request_logger.py`  |
+| Raw fixed-format phone number excluded from logs  |    ✅   | Masked-text logging flow       |
+| Exactly 15-query evaluation                       |    ✅   | `eval/task13_judge_eval.py`    |
+| Accuracy metric                                   |    ✅   | Task 13 artifacts              |
+| Grounding metric                                  |    ✅   | Task 13 artifacts              |
+| Completeness metric                               |    ✅   | Task 13 artifacts              |
+| Safety metric                                     |    ✅   | Task 13 artifacts              |
+| AutoGen two-agent review                          |    ✅   | `autogen_review.py`            |
+| `RoundRobinGroupChat`                             |    ✅   | `autogen_review.py`            |
+| `max_turns=2`                                     |    ✅   | `autogen_review.py`            |
+| Structured AutoGen verdict                        |    ✅   | `autogen_review.py`            |
+| Approval demonstration                            |    ✅   | Task 14                        |
+| Revision demonstration                            |    ✅   | Task 14                        |
+| Lookup-tool least autonomy                        |    ✅   | `governance.py`                |
+| Recruitment risk classification                   |    ✅   | `governance.py`                |
+| Token budget                                      |    ✅   | `governance.py`                |
+| Synthetic cost budget                             |    ✅   | `governance.py`                |
+| Oversized request rejected                        |    ✅   | `governance.py`                |
+| In-memory response cache                          |    ✅   | `response_cache.py`            |
+| Normalized-query cache key                        |    ✅   | `response_cache.py`            |
+| Real cache hit demonstrated                       |    ✅   | Task 16                        |
+| Duplicate RAG execution avoided                   |    ✅   | Call counter                   |
+| Lookup excluded from cache                        |    ✅   | Cache design                   |
+| Deterministic `MOCK_LLM`                          |    ✅   | `crew_agents.py`, evaluation   |
+| CrewAI telemetry disabled                         |    ✅   | Runtime + source configuration |
+| Tested CrewAI version recorded                    |    ✅   | `requirements.txt`             |
 
 ---
 
-# Design Summary by Task
+# 15. Design Summary by Task
 
-| Tasks     | Main Deliverable                                                                     |
-| --------- | ------------------------------------------------------------------------------------ |
-| Tasks 1-2 | Dataset and application data preparation                                             |
-| Task 3    | Knowledge base, chunking, embeddings and ChromaDB                                    |
-| Task 4    | Grounded generation and threshold calibration                                        |
-| Task 5    | Chunking precision/recall comparison                                                 |
-| Task 6    | Application-status lookup, escalation score, and recommendation                      |
-| Task 7    | CrewAI multi-agent workflow and tools                                                |
-| Task 8    | Session memory                                                                       |
-| Task 9    | Pydantic structured response                                                         |
-| Task 10   | PII masking, prompt-injection detection and RAG-output groundedness                  |
-| Task 11   | FastAPI + WebSocket deployment                                                       |
-| Task 12   | Structured JSONL logging                                                             |
-| Task 13   | 15-query evaluation harness                                                          |
-| Task 14   | AutoGen governance/review stage                                                      |
-| Task 15   | Least autonomy, risk and runtime governance                                          |
-| Task 16   | In-memory normalized-query response caching integrated into the live CrewAI RAG path |
+| Task    | Deliverable                                            |
+| ------- | ------------------------------------------------------ |
+| Task 1  | Deterministic job-application dataset                  |
+| Task 2  | 12-document Recruitment & HR knowledge base            |
+| Task 3  | Two chunking strategies, embeddings and ChromaDB       |
+| Task 4  | Grounded generation and empirical production threshold |
+| Task 5  | Document-level precision/recall comparison             |
+| Task 6  | Application lookup and escalation score                |
+| Task 7  | Three-agent CrewAI orchestration                       |
+| Task 8  | Session memory and fresh-session isolation             |
+| Task 9  | Pydantic structured output                             |
+| Task 10 | PII, prompt-injection and groundedness guardrails      |
+| Task 11 | FastAPI HTTP + WebSocket deployment                    |
+| Task 12 | Structured JSONL observability                         |
+| Task 13 | 15-query LLM-as-judge evaluation                       |
+| Task 14 | AutoGen policy/compliance review                       |
+| Task 15 | Least autonomy, risk and runtime governance            |
+| Task 16 | Normalized-query response cache                        |
 
 ---
 
-# Key Results
+# 16. Key Results
 
 ## Dataset
 
 ```text
-Records generated: 50
-Seed: 42
-Categories: 5
-Statuses: 5
-Flagged band: 10%-30%
-Salary range: ₹4,00,000-₹18,00,000
+Records:
+50
+
+Seed:
+42
+
+Categories:
+5
+
+Statuses:
+5
+
+Salary range:
+₹4,00,000 - ₹18,00,000
+
+days_since_created:
+0-30
+
+Flagged-review requirement:
+10%-30%
+```
+
+## Knowledge Base
+
+```text
+Required documents:
+12
+
+Sentences per document:
+4
+
+Required topic coverage:
+12/12
 ```
 
 ## RAG
@@ -2215,45 +2439,60 @@ Fixed overlap:
 Sentence chunk:
 2 sentences
 
-Top-K:
+TOP_K:
 3
 
-Calibrated threshold:
-0.3495
+Fixed chunks:
+45
 
-Selected collection:
+Sentence chunks:
+24
+
+Production collection:
 fixed_chunks
+
+Production calibrated threshold:
+0.3549
 ```
 
-## Retrieval Evaluation
+## Task 5 Retrieval Comparison
 
 ```text
 fixed_chunks:
 
-Precision = 0.6667
-Recall     = 1.0000
+Precision = 1.0000
+Recall    = 1.0000
+
 
 sentence_chunks:
 
 Precision = 0.4333
-Recall     = 1.0000
+Recall    = 1.0000
 ```
 
-## Task 13
+## Task 13 Evaluation
 
 ```text
-Queries = 15
+Queries:
+15
 
-Accuracy     = 1.0000
-Grounding    = 0.5971
-Completeness = 1.0000
-Safety       = 1.0000
+Accuracy:
+1.0000
+
+Grounding:
+0.5971
+
+Completeness:
+1.0000
+
+Safety:
+1.0000
 ```
 
 ## Governance
 
 ```text
-Risk level:
+Risk:
 High
 
 Maximum request tokens:
@@ -2261,269 +2500,491 @@ Maximum request tokens:
 
 Maximum synthetic request cost:
 $0.015
+
+Privileged lookup tool:
+Lookup Agent only
 ```
 
 ## Caching
 
 ```text
-Task 16:
+Cache type:
+In-memory
 
-First normalized query:
-cache miss -> real RAG call
+Cache key:
+Normalized query text
 
-Second equivalent query:
-cache hit -> duplicate RAG call skipped
+First equivalent request:
+Cache miss
+
+Second equivalent request:
+Cache hit
+
+Underlying real RAG calls:
+1
 ```
-
-The response cache is integrated into the live CrewAI `rag_search()` path, while application-status lookup remains intentionally uncached.
 
 ---
 
-# Reproducibility Notes
+# 17. Reproducibility Notes
 
-The project intentionally keeps its important evaluation choices explicit.
-
-## Dataset
+## Dataset configuration
 
 ```text
 SEED = 42
 NUM_RECORDS = 50
+OUTPUT_FILE = job_applications.csv
 ```
 
-Categories and statuses use explicit configured weights selected to maintain balanced and reproducible coverage of the required categories and application outcomes.
-
-The salary range is:
+### Categories
 
 ```text
-₹4,00,000-₹18,00,000
+Software Engineer
+Data Analyst
+Product Manager
+HR Executive
+Sales Associate
 ```
 
-This is a broad synthetic range intended to cover realistic values across the supported job categories while remaining reproducible.
-
-The flagged-review band is:
+### Statuses
 
 ```text
-10%-30%
+Applied
+Screening
+Interview Scheduled
+Offered
+Rejected
 ```
 
-## RAG
+### Salary range
+
+```text
+₹4,00,000 - ₹18,00,000
+```
+
+### Application age
+
+```text
+0-30 days
+```
+
+The dataset generator validates the capstone's structural constraints after generation.
+
+---
+
+## Knowledge-base configuration
+
+Exactly 12 required documents are provided.
+
+Each document contains four sentences.
+
+---
+
+## RAG configuration
 
 ```text
 Embedding:
 sentence-transformers/all-MiniLM-L6-v2
 
-Fixed chunk:
+Fixed chunk size:
 200 characters
 
-Overlap:
+Fixed overlap:
 50 characters
 
 Sentence chunk:
 2 sentences
 
-TOP_K:
+Top-K:
 3
 
-Threshold:
-0.3495
+Production collection:
+fixed_chunks
+
+Production threshold:
+0.3549
 ```
 
-The Task 5 evaluation uses the documented fixed-size chunking implementation. The live CrewAI integration uses a word-boundary-safe refinement of that fixed-size strategy.
+The threshold is derived from measured scores in the production fixed-path collection and should be recalculated whenever the production retrieval configuration changes materially.
 
-## Knowledge Base
+---
 
-All 12 knowledge-base documents were verified to contain exactly 4 sentences each, placing every document within the required 2-5 sentence range.
+## CrewAI configuration
 
-## Runtime
+```text
+CrewAI:
+1.15.18
+```
+
+The version is pinned in:
+
+```text
+requirements.txt
+```
+
+---
+
+## MOCK_LLM configuration
+
+The graded workflow uses:
 
 ```text
 MOCK_LLM = True
-
-CREWAI_DISABLE_TELEMETRY = true
-
-OTEL_SDK_DISABLED = true
 ```
 
-## CrewAI Dependency
+The deterministic local workflow is designed to run without requiring a commercial LLM API key.
 
-The validated working environment reports:
+---
+
+## Telemetry configuration
+
+The local execution environment uses:
 
 ```text
-CrewAI = 1.15.18
+CREWAI_DISABLE_TELEMETRY=true
+OTEL_SDK_DISABLED=true
 ```
 
-The submission pins:
+These values are applied before CrewAI import in the main CrewAI implementation.
+
+Runtime execution confirms:
 
 ```text
-crewai==1.15.18
+Tracing is disabled.
 ```
 
-in `requirements.txt`.
+---
 
-Because the deterministic `MOCK_LLM` implementation depends on the tested CrewAI prompt structure, changing the CrewAI version should be treated as a compatibility change requiring retesting.
+## RAG collection rebuild
 
-## Evaluation
+The RAG build recreates the Chroma collections before repopulation so that previous execution data does not accumulate in the vector store.
 
-Task 13 uses exactly:
+The expected clean collection sizes are:
+
+```text
+fixed_chunks:
+45
+
+sentence_chunks:
+24
+```
+
+This keeps the measured retrieval and calibration results synchronized with the current knowledge-base contents.
+
+---
+
+## Task 13 configuration
+
+The evaluation contains exactly:
 
 ```text
 15 queries
+```
+
+Structured as:
+
+```text
 12 KB-topic queries
 2 out-of-scope queries
 1 application lookup query
 ```
 
-## Caching
+The four evaluation metrics are:
+
+```text
+Accuracy
+Grounding
+Completeness
+Safety
+```
+
+The saved outputs are:
+
+```text
+eval/task13_results.json
+eval/task13_results.csv
+```
+
+---
+
+## Response-cache configuration
 
 The cache is:
 
 ```text
-in-memory
-normalized-query keyed
+In-memory
+Process-local
+Normalized-query keyed
 RAG-only
-integrated into the live CrewAI rag_search() path
 ```
 
-Application-status results are not cached.
+Application-status lookup is intentionally not cached.
 
-The demonstrated Task 16 cache evidence shows one real RAG execution, one cache miss, one normalized-query cache hit, equal normalized keys, and equal returned results.
+---
 
-## API and Logging
+# 18. Limitations
 
-For `/ask` and every WebSocket turn:
+This project is a capstone implementation rather than a production Naukri.com backend.
+
+The application dataset is synthetic.
+
+The HR knowledge base is project-created content and is not presented as live Naukri.com policy.
+
+The deterministic `MOCK_LLM` should not be interpreted as a benchmark of a commercial language model.
+
+The token and cost controls are governance simulations rather than actual provider billing controls.
+
+Prompt-injection detection is implemented using deterministic pattern-based checks and therefore cannot guarantee detection of every possible semantic attack.
+
+The response cache is in-memory and process-local rather than persistent or distributed.
+
+Application-status information is generated from the synthetic CSV dataset and does not represent real candidate data.
+
+The recruitment workflow is classified as High Risk within the supplied capstone governance scheme, while this implementation is intended for support rather than autonomous hiring decisions.
+
+The calibrated RAG threshold is specific to this knowledge base, embedding model, chunking configuration and production collection.
+
+---
+
+# 19. Conclusion
+
+The **Naukri.com Domain Support Agent** implements the complete Final Capstone workflow from deterministic data generation through retrieval, multi-agent orchestration, API deployment, governance and optimization.
+
+The system combines:
 
 ```text
-raw input
-   |
-   v
-apply_input_guardrails()      [exactly once]
-   |
-   v
-masked_text
-   |
-   +----------------------+
-   |                      |
-   v                      v
-CrewAI                JSONL logger
+Deterministic Dataset
+        +
+Controlled Knowledge Base
+        +
+Measured RAG Retrieval
+        +
+Empirical Groundedness Threshold
+        +
+CrewAI Multi-Agent Orchestration
+        +
+Restricted Application Lookup
+        +
+Session Memory
+        +
+Pydantic Structured Outputs
+        +
+Input / Output Guardrails
+        +
+FastAPI Deployment
+        +
+WebSocket Chat
+        +
+Structured JSONL Logging
+        +
+15-Query Evaluation
+        +
+AutoGen Governance Review
+        +
+Least-Autonomy Enforcement
+        +
+Runtime Token / Cost Controls
+        +
+Normalized-Query Response Caching
 ```
 
-Validation failures that occur before endpoint execution are handled separately using a safe placeholder rather than the malformed raw request body.
+The central design principle is that a robust HR support agent requires more than a language model.
+
+It requires:
+
+* Controlled evidence
+* Measured retrieval quality
+* Explicit groundedness rules
+* Restricted privileged tools
+* Session-aware behavior
+* Structured outputs
+* Safety guardrails
+* Auditable logging
+* Independent governance review
+* Runtime limits
+* Efficient repeated-query handling
 
 ---
 
-# Limitations
+# 20. Main Files
 
-This project is designed as a capstone demonstration rather than a production Naukri.com backend.
-
-The application data is synthetic.
-
-The RAG knowledge base contains project-specific HR policy documents rather than live Naukri.com production policies.
-
-The `MOCK_LLM` layer is deterministic and should not be interpreted as a benchmark of a real commercial LLM.
-
-The token and cost governance values are synthetic controls used for reproducible demonstration rather than actual provider billing.
-
-The prompt-injection detector uses deterministic patterns and therefore does not cover every possible semantic prompt-injection technique.
-
-The response cache is process-local and in-memory. It is integrated into the live CrewAI `rag_search()` path and is demonstrated through `response_cache.py`. It is not a distributed or persistent cache.
-
-Application-status lookup uses structured application data rather than RAG similarity; consequently, the RAG groundedness guardrail is intentionally not applied to lookup-backed responses.
-
-The CrewAI integration should be run with the exact pinned version used during project validation because the deterministic `MOCK_LLM` implementation depends on the tested CrewAI prompt structure.
-
-The Task 6 lookup returns both an escalation score and an `escalation_recommended` boolean derived from the 80th-percentile escalation threshold.
-
----
-
-# Conclusion
-
-This project implements a complete Recruitment & HR domain-support workflow from data generation through retrieval, agent orchestration, API serving, safety controls, evaluation, governance, and optimization.
-
-The most important design principle is that the system does not treat agent generation as the only important part of the solution.
-
-Instead, the workflow is built around:
-
-```text
-Controlled knowledge
-        +
-Measured retrieval
-        +
-Restricted tools
-        +
-Session context
-        +
-Input/output guardrails
-        +
-Structured APIs
-        +
-Auditable logging
-        +
-Independent evaluation
-        +
-Governance
-        +
-Optimization demonstration
-```
-
-The result is a reproducible capstone implementation that demonstrates how a domain-specific support agent can be made more grounded, controlled, observable, and efficient.
-
----
-
-# Main Files
+## Data and RAG
 
 * [`dataset.py`](dataset.py)
+* [`job_applications.csv`](job_applications.csv)
 * [`rag_core.py`](rag_core.py)
-* [`task6_tool.py`](task6_tool.py)
+* [`knowledge_base/`](knowledge_base/)
+
+## CrewAI and tools
+
 * [`crew_agents.py`](crew_agents.py)
+* [`task6_tool.py`](task6_tool.py)
+
+## Guardrails and API
+
 * [`guardrails.py`](guardrails.py)
+* [`task_10.py`](task_10.py)
 * [`api.py`](api.py)
 * [`request_logger.py`](request_logger.py)
+* [`test_websocket.py`](test_websocket.py)
+
+## Governance and caching
+
 * [`autogen_review.py`](autogen_review.py)
 * [`governance.py`](governance.py)
 * [`response_cache.py`](response_cache.py)
+
+## Evaluation
+
 * [`eval/task13_judge_eval.py`](eval/task13_judge_eval.py)
-* [`task_10.py`](task_10.py)
+* [`eval/task13_results.json`](eval/task13_results.json)
+* [`eval/task13_results.csv`](eval/task13_results.csv)
+
+## Dependencies
+
 * [`requirements.txt`](requirements.txt)
 
 ---
 
-## Project Status
+# 21. Final Project Status
 
 ```text
-Tasks 1-16 implemented
+Naukri.com (Recruitment & HR) Track:
+COMPLETE
 
-Dataset validated
+Task 1:
+COMPLETE
 
-RAG evaluated
+Task 2:
+COMPLETE
 
-Knowledge-base sentence counts verified
+Task 3:
+COMPLETE
 
-CrewAI workflow implemented
+Task 4:
+COMPLETE
 
-Guardrails implemented
+Task 5:
+COMPLETE
 
-FastAPI implemented
+Task 6:
+COMPLETE
 
-JSONL logging implemented
+Task 7:
+COMPLETE
 
-Task 13 evaluation completed
+Task 8:
+COMPLETE
 
-AutoGen governance review implemented
+Task 9:
+COMPLETE
 
-Task 15 governance controls implemented
+Task 10:
+COMPLETE
 
-Task 16 response caching implemented, integrated, and demonstrated
+Task 11:
+COMPLETE
+
+Task 12:
+COMPLETE
+
+Task 13:
+COMPLETE
+
+Task 14:
+COMPLETE
+
+Task 15:
+COMPLETE
+
+Task 16:
+COMPLETE
+
+MOCK_LLM:
+SUPPORTED
+
+Zero-paid-API graded workflow:
+SUPPORTED
+
+CrewAI telemetry:
+DISABLED
+
+Public GitHub repository:
+READY FOR SUBMISSION
 ```
 
-## Task 13 - Evaluation Results
+## Final verified reproducibility values
 
-The evaluation uses exactly 15 queries covering all 12 required knowledge-base topics, 2 out-of-scope queries, and 1 application lookup query. Evaluation was executed with the local `MOCK_LLM` setup.
+```text
+Seed:
+42
 
-| Metric       | Average |
-| ------------ | ------: |
-| Accuracy     |  1.0000 |
-| Grounding    |  0.5971 |
-| Completeness |  1.0000 |
-| Safety       |  1.0000 |
+Dataset records:
+50
 
-Detailed results are saved in `eval/task13_results.json` and `eval/task13_results.csv`.
+KB documents:
+12
+
+Fixed chunks:
+45
+
+Sentence chunks:
+24
+
+Embedding model:
+sentence-transformers/all-MiniLM-L6-v2
+
+Top-K:
+3
+
+Production RAG collection:
+fixed_chunks
+
+Production calibrated threshold:
+0.3549
+
+Task 5 fixed precision:
+1.0000
+
+Task 5 fixed recall:
+1.0000
+
+Task 5 sentence precision:
+0.4333
+
+Task 5 sentence recall:
+1.0000
+
+Task 13 query count:
+15
+
+Task 13 Accuracy:
+1.0000
+
+Task 13 Grounding:
+0.5971
+
+Task 13 Completeness:
+1.0000
+
+Task 13 Safety:
+1.0000
+
+Token budget:
+2,000
+
+Synthetic cost budget:
+$0.015
+
+Response cache:
+Enabled
+
+Application lookup caching:
+Disabled intentionally
+
+CrewAI version:
+1.15.18
+
+CrewAI telemetry:
+Disabled
+```
