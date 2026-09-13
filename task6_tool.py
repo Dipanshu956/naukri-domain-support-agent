@@ -243,14 +243,17 @@ def check_job_application_status(record_id: str) -> dict: #
             # "status" and "expected_salary_inr" are taken
             # directly from the matching dataset record.
             return {
-                "record_id": application["record_id"],
-                "candidate_name": application["candidate_name"],
-                "status": application["status"],
-                "expected_salary_inr": application[
-                    "expected_salary_inr"
-                ],
-                "escalation_score": escalation_score,
-            }
+                        "record_id": application["record_id"],
+                        "candidate_name": application["candidate_name"],
+                        "status": application["status"],
+                        "expected_salary_inr": application[
+                            "expected_salary_inr"
+                        ],
+                        "escalation_score": escalation_score,
+                        "escalation_recommended": (
+                            escalation_score > ESCALATION_THRESHOLD
+                        ),
+                    }
 
     # If the loop finishes without finding the record,
     # raise an error so invalid IDs are handled clearly.

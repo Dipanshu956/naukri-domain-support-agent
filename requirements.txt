@@ -1,6 +1,6 @@
 chromadb
 sentence-transformers
-crewai
+crewai==1.15.18
 langchain-core
 pydantic
 autogen-agentchat
